@@ -1,6 +1,6 @@
 # generic files to ignore
 .*
-
+build
 # python temp paths
 __pycache__/
 *.py[cod]
