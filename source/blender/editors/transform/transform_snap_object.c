@@ -221,22 +221,40 @@ static void iter_snap_objects(SnapObjectContext *sctx,
 
   Base *base_act = view_layer->basact;
   for (Base *base = view_layer->object_bases.first; base != NULL; base = base->next) {
-    if ((BASE_VISIBLE(v3d, base)) && (base->flag_legacy & BA_SNAP_FIX_DEPS_FIASCO) == 0 &&
-        !((snap_select == SNAP_NOT_SELECTED &&
-           ((base->flag & BASE_SELECTED) || (base->flag_legacy & BA_WAS_SEL))) ||
-          (snap_select == SNAP_NOT_ACTIVE && base == base_act))) {
-      Object *obj_eval = DEG_get_evaluated_object(sctx->depsgraph, base->object);
-      if (obj_eval->transflag & OB_DUPLI) {
-        DupliObject *dupli_ob;
-        ListBase *lb = object_duplilist(sctx->depsgraph, sctx->scene, obj_eval);
-        for (dupli_ob = lb->first; dupli_ob; dupli_ob = dupli_ob->next) {
-          sob_callback(sctx, use_object_edit_cage, dupli_ob->ob, dupli_ob->mat, data);
-        }
-        free_object_duplilist(lb);
-      }
 
-      sob_callback(sctx, use_object_edit_cage, obj_eval, obj_eval->obmat, data);
+    if (!BASE_VISIBLE(v3d, base)) {
+      continue;
     }
+
+    if (base->flag_legacy & BA_TRANSFORM_LOCKED_IN_PLACE) {
+      /* pass */
+    }
+    else if (base->flag_legacy & BA_SNAP_FIX_DEPS_FIASCO) {
+      continue;
+    }
+
+    if (snap_select == SNAP_NOT_SELECTED) {
+      if ((base->flag & BASE_SELECTED) || (base->flag_legacy & BA_WAS_SEL)) {
+        continue;
+      }
+    }
+    else if (snap_select == SNAP_NOT_ACTIVE) {
+      if (base == base_act) {
+        continue;
+      }
+    }
+
+    Object *obj_eval = DEG_get_evaluated_object(sctx->depsgraph, base->object);
+    if (obj_eval->transflag & OB_DUPLI) {
+      DupliObject *dupli_ob;
+      ListBase *lb = object_duplilist(sctx->depsgraph, sctx->scene, obj_eval);
+      for (dupli_ob = lb->first; dupli_ob; dupli_ob = dupli_ob->next) {
+        sob_callback(sctx, use_object_edit_cage, dupli_ob->ob, dupli_ob->mat, data);
+      }
+      free_object_duplilist(lb);
+    }
+
+    sob_callback(sctx, use_object_edit_cage, obj_eval, obj_eval->obmat, data);
   }
 }
 
@@ -1418,8 +1436,14 @@ static short snap_mesh_edge_verts_mixed(SnapObjectContext *sctx,
     /* do nothing */
   }
   else {
-    if (snapdata->snap_to_flag & SCE_SNAP_MODE_VERTEX) {
-      if (lambda < 0.25f || 0.75f < lambda) {
+    short snap_to_flag = snapdata->snap_to_flag;
+    int e_mode_len = ((snap_to_flag & SCE_SNAP_MODE_EDGE) != 0) +
+                     ((snap_to_flag & SCE_SNAP_MODE_VERTEX) != 0) +
+                     ((snap_to_flag & SCE_SNAP_MODE_EDGE_MIDPOINT) != 0);
+
+    float range = 1.0f / (2 * e_mode_len - 1);
+    if (snap_to_flag & SCE_SNAP_MODE_VERTEX) {
+      if (lambda < (range) || (1.0f - range) < lambda) {
         int v_id = lambda < 0.5f ? 0 : 1;
 
         if (test_projected_vert_dist(&neasrest_precalc,
@@ -1436,8 +1460,9 @@ static short snap_mesh_edge_verts_mixed(SnapObjectContext *sctx,
       }
     }
 
-    if (snapdata->snap_to_flag & SCE_SNAP_MODE_EDGE_MIDPOINT) {
-      if (0.375f < lambda && lambda < 0.625f) {
+    if (snap_to_flag & SCE_SNAP_MODE_EDGE_MIDPOINT) {
+      range *= e_mode_len - 1;
+      if ((range) < lambda && lambda < (1.0f - range)) {
         float vmid[3];
         mid_v3_v3v3(vmid, v_pair[0], v_pair[1]);
 
@@ -2335,7 +2360,6 @@ static short snapEditMesh(SnapObjectContext *sctx,
       .index = -1,
       .dist_sq = dist_px_sq,
   };
-  int last_index = nearest.index;
   short elem = SCE_SNAP_MODE_VERTEX;
 
   float tobmat[4][4], clip_planes_local[MAX_CLIPPLANE_LEN][4];
@@ -2356,12 +2380,12 @@ static short snapEditMesh(SnapObjectContext *sctx,
                                        &nearest,
                                        cb_snap_vert,
                                        &nearest2d);
-
-    last_index = nearest.index;
   }
 
   if (treedata_edge && snapdata->snap_to_flag & (SCE_SNAP_MODE_EDGE | SCE_SNAP_MODE_EDGE_MIDPOINT |
                                                  SCE_SNAP_MODE_EDGE_PERPENDICULAR)) {
+    int last_index = nearest.index;
+    nearest.index = -1;
     BM_mesh_elem_table_ensure(em->bm, BM_EDGE | BM_VERT);
     BLI_bvhtree_find_nearest_projected(treedata_edge->tree,
                                        lpmat,
@@ -2373,8 +2397,11 @@ static short snapEditMesh(SnapObjectContext *sctx,
                                        cb_snap_edge,
                                        &nearest2d);
 
-    if (last_index != nearest.index) {
+    if (nearest.index != -1) {
       elem = SCE_SNAP_MODE_EDGE;
+    }
+    else {
+      nearest.index = last_index;
     }
   }
 

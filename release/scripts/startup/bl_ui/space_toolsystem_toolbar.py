@@ -490,12 +490,17 @@ class _defs_edit_mesh:
 
     @ToolDef.from_fn
     def poly_build():
+        def draw_settings(context, layout, tool):
+            props = tool.operator_properties("mesh.polybuild_face_at_cursor_move")
+            props_macro = props.MESH_OT_polybuild_face_at_cursor
+            layout.prop(props_macro, "create_quads")
         return dict(
             idname="builtin.poly_build",
             label="Poly Build",
             icon="ops.mesh.polybuild_hover",
             widget="VIEW3D_GGT_mesh_preselect_elem",
             keymap=(),
+            draw_settings=draw_settings,
         )
 
     @ToolDef.from_fn
@@ -719,8 +724,6 @@ class _defs_edit_mesh:
     def shear():
         def draw_settings(context, layout, tool):
             props = tool.operator_properties("transform.shear")
-            layout.label(text="View Axis:")
-            layout.prop(props, "shear_axis", expand=True)
             _template_widget.VIEW3D_GGT_xform_gizmo.draw_settings_with_index(context, layout, 2)
         return dict(
             idname="builtin.shear",

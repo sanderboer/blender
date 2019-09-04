@@ -546,27 +546,27 @@ static void rna_Object_parent_set(PointerRNA *ptr,
   }
 }
 
-bool rna_Object_parent_override_apply(Main *UNUSED(bmain),
-                                      PointerRNA *ptr_dst,
-                                      PointerRNA *ptr_src,
-                                      PointerRNA *ptr_storage,
-                                      PropertyRNA *prop_dst,
-                                      PropertyRNA *prop_src,
-                                      PropertyRNA *UNUSED(prop_storage),
-                                      const int len_dst,
-                                      const int len_src,
-                                      const int len_storage,
-                                      PointerRNA *UNUSED(ptr_item_dst),
-                                      PointerRNA *UNUSED(ptr_item_src),
-                                      PointerRNA *UNUSED(ptr_item_storage),
-                                      IDOverrideLibraryPropertyOperation *opop)
+static bool rna_Object_parent_override_apply(Main *UNUSED(bmain),
+                                             PointerRNA *ptr_dst,
+                                             PointerRNA *ptr_src,
+                                             PointerRNA *ptr_storage,
+                                             PropertyRNA *prop_dst,
+                                             PropertyRNA *prop_src,
+                                             PropertyRNA *UNUSED(prop_storage),
+                                             const int len_dst,
+                                             const int len_src,
+                                             const int len_storage,
+                                             PointerRNA *UNUSED(ptr_item_dst),
+                                             PointerRNA *UNUSED(ptr_item_src),
+                                             PointerRNA *UNUSED(ptr_item_storage),
+                                             IDOverrideLibraryPropertyOperation *opop)
 {
   BLI_assert(len_dst == len_src && (!ptr_storage || len_dst == len_storage) && len_dst == 0);
   BLI_assert(opop->operation == IDOVERRIDE_LIBRARY_OP_REPLACE &&
-             "Unsupported RNA override operation on animdata pointer");
+             "Unsupported RNA override operation on object parent pointer");
   UNUSED_VARS_NDEBUG(ptr_storage, len_dst, len_src, len_storage, opop);
 
-  /* We need a special handling here because setting parent resets pinvert parent matrix,
+  /* We need a special handling here because setting parent resets invert parent matrix,
    * which is evil in our case. */
   Object *ob = (Object *)ptr_dst->data;
   Object *parent_dst = RNA_property_pointer_get(ptr_dst, prop_dst).data;
@@ -2819,6 +2819,14 @@ static void rna_def_object(BlenderRNA *brna)
       prop, NULL, "empty_image_visibility_flag", OB_EMPTY_IMAGE_HIDE_ORTHOGRAPHIC);
   RNA_def_property_ui_text(
       prop, "Display in Orthographic Mode", "Display image in orthographic mode");
+  RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
+
+  prop = RNA_def_property(srna, "show_empty_image_only_axis_aligned", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(
+      prop, NULL, "empty_image_visibility_flag", OB_EMPTY_IMAGE_HIDE_NON_AXIS_ALIGNED);
+  RNA_def_property_ui_text(prop,
+                           "Display Only Axis Aligned",
+                           "Only display the image when it is aligned with the view axis");
   RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, NULL);
 
   prop = RNA_def_property(srna, "use_empty_image_alpha", PROP_BOOLEAN, PROP_NONE);

@@ -154,8 +154,8 @@ typedef struct IconType {
 } IconType;
 
 /* ******************* STATIC LOCAL VARS ******************* */
-/* static here to cache results of icon directory scan, so it's not
- * scanning the filesystem each time the menu is drawn */
+/* Static here to cache results of icon directory scan, so it's not
+ * scanning the file-system each time the menu is drawn. */
 static struct ListBase iconfilelist = {NULL, NULL};
 static IconTexture icongltex = {{0, 0}, 0, 0, 0, 0.0f, 0.0f};
 
@@ -2244,6 +2244,8 @@ int UI_idcode_icon_get(const int idcode)
       return ICON_FONT_DATA;
     case ID_WO:
       return ICON_WORLD_DATA;
+    case ID_WS:
+      return ICON_WORKSPACE;
     default:
       return ICON_NONE;
   }
