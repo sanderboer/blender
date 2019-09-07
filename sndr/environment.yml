@@ -1,0 +1,32 @@
+name: freecad-blender
+channels:
+  - pythonocc
+  - tpaviot
+  - oce
+  - dlr-sc
+  - conda-forge
+  - defaults
+  - ifcopenshell
+  - freecad
+dependencies:
+  - matplotlib
+  - netcdf4
+  - boost
+  - ca-certificates
+  - certifi
+  - compas
+  - requests
+  - jedi
+  - numpy
+  - oce
+  - openssl
+  - pip
+  - python=3.7
+  - pythonocc-core=0.18.2
+  - neovim
+  - flake8
+  - pylint
+  - pycodestyle
+  - pip:
+    - PySide
+    - shiboken
