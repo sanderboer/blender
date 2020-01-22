@@ -340,6 +340,23 @@ bool BKE_gpencil_has_time_modifiers(Object *ob)
   return false;
 }
 
+/* Check if exist transform stroke modifiers (to rotate sculpt or edit). */
+bool BKE_gpencil_has_transform_modifiers(Object *ob)
+{
+  GpencilModifierData *md;
+  for (md = ob->greasepencil_modifiers.first; md; md = md->next) {
+    /* Only if enabled in edit mode. */
+    if (!GPENCIL_MODIFIER_EDIT(md, true) && GPENCIL_MODIFIER_ACTIVE(md, false)) {
+      if ((md->type == eGpencilModifierType_Armature) || (md->type == eGpencilModifierType_Hook) ||
+          (md->type == eGpencilModifierType_Lattice) ||
+          (md->type == eGpencilModifierType_Offset)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 /* apply stroke modifiers */
 void BKE_gpencil_stroke_modifiers(Depsgraph *depsgraph,
                                   Object *ob,
@@ -844,6 +861,14 @@ void BKE_gpencil_modifiers_calc(Depsgraph *depsgraph, Scene *scene, Object *ob)
   const bool is_render = (bool)(DEG_get_mode(depsgraph) == DAG_EVAL_RENDER);
   const bool time_remap = BKE_gpencil_has_time_modifiers(ob);
   int cfra_eval = (int)DEG_get_ctime(depsgraph);
+
+  /* Clear any previous evaluated data. */
+  if (ob->runtime.gpencil_tot_layers > 0) {
+    for (int i = 0; i < ob->runtime.gpencil_tot_layers; i++) {
+      bGPDframe *gpf_eval = &ob->runtime.gpencil_evaluated_frames[i];
+      BKE_gpencil_free_frame_runtime_data(gpf_eval);
+    }
+  }
 
   /* Create array of evaluated frames equal to number of layers. */
   ob->runtime.gpencil_tot_layers = BLI_listbase_count(&gpd->layers);

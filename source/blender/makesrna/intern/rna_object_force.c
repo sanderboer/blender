@@ -25,7 +25,7 @@
 #include "DNA_object_force_types.h"
 #include "DNA_particle_types.h"
 #include "DNA_scene_types.h"
-#include "DNA_smoke_types.h"
+#include "DNA_fluid_types.h"
 
 #include "RNA_define.h"
 #include "RNA_enum_types.h"
@@ -738,10 +738,10 @@ static char *rna_EffectorWeight_path(PointerRNA *ptr)
     }
 
     /* check smoke modifier */
-    md = (ModifierData *)modifiers_findByType(ob, eModifierType_Smoke);
+    md = (ModifierData *)modifiers_findByType(ob, eModifierType_Fluid);
     if (md) {
-      SmokeModifierData *smd = (SmokeModifierData *)md;
-      if (smd->domain->effector_weights == ew) {
+      FluidModifierData *mmd = (FluidModifierData *)md;
+      if (mmd->domain->effector_weights == ew) {
         char name_esc[sizeof(md->name) * 2];
         BLI_strescape(name_esc, md->name, sizeof(name_esc));
         return BLI_sprintfN("modifiers[\"%s\"].settings.effector_weights", name_esc);
@@ -798,7 +798,7 @@ static void rna_CollisionSettings_update(Main *UNUSED(bmain),
 {
   Object *ob = (Object *)ptr->owner_id;
 
-  DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM | ID_RECALC_GEOMETRY | ID_RECALC_ANIMATION);
+  DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM | ID_RECALC_GEOMETRY);
   WM_main_add_notifier(NC_OBJECT | ND_DRAW, ob);
 }
 
@@ -1943,7 +1943,7 @@ static void rna_def_softbody(BlenderRNA *brna)
 
   prop = RNA_def_property(srna, "use_estimate_matrix", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, NULL, "solverflags", SBSO_ESTIMATEIPO);
-  RNA_def_property_ui_text(prop, "Estimate matrix", "Estimate matrix... split to COM, ROT, SCALE");
+  RNA_def_property_ui_text(prop, "Estimate Matrix", "Estimate matrix... split to COM, ROT, SCALE");
 
   /***********************************************************************************/
   /* these are not exactly settings, but reading calculated results*/
@@ -1952,7 +1952,7 @@ static void rna_def_softbody(BlenderRNA *brna)
   /* translation */
   prop = RNA_def_property(srna, "location_mass_center", PROP_FLOAT, PROP_TRANSLATION);
   RNA_def_property_float_sdna(prop, NULL, "lcom");
-  RNA_def_property_ui_text(prop, "Center of mass", "Location of Center of mass");
+  RNA_def_property_ui_text(prop, "Center of Mass", "Location of center of mass");
   RNA_def_property_ui_range(prop, -FLT_MAX, FLT_MAX, 1, RNA_TRANSLATION_PREC_DEFAULT);
 
   /* matrix */

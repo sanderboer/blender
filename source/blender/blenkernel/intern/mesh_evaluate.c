@@ -915,7 +915,8 @@ static void mesh_edges_sharp_tag(LoopSplitTaskDataCommon *data,
   }
 }
 
-/** Define sharp edges as needed to mimic 'autosmooth' from angle threshold.
+/**
+ * Define sharp edges as needed to mimic 'autosmooth' from angle threshold.
  *
  * Used when defining an empty custom loop normals data layer,
  * to keep same shading as with autosmooth!
@@ -2320,6 +2321,24 @@ float BKE_mesh_calc_poly_area(const MPoly *mpoly, const MLoop *loopstart, const 
   }
 }
 
+float BKE_mesh_calc_area(const Mesh *me)
+{
+  MVert *mvert = me->mvert;
+  MLoop *mloop = me->mloop;
+  MPoly *mpoly = me->mpoly;
+
+  MPoly *mp;
+  int i = me->totpoly;
+  float total_area = 0;
+
+  for (mp = mpoly; i--; mp++) {
+    MLoop *ml_start = &mloop[mp->loopstart];
+
+    total_area += BKE_mesh_calc_poly_area(mp, ml_start, mvert);
+  }
+  return total_area;
+}
+
 float BKE_mesh_calc_poly_uv_area(const MPoly *mpoly, const MLoopUV *uv_array)
 {
 
@@ -2373,9 +2392,7 @@ static float mesh_calc_poly_volume_centroid(const MPoly *mpoly,
 
     /* Calculate the 6x volume of the tetrahedron formed by the 3 vertices
      * of the triangle and the origin as the fourth vertex */
-    float v_cross[3];
-    cross_v3_v3v3(v_cross, v_pivot, v_step1);
-    const float tetra_volume = dot_v3v3(v_cross, v_step2);
+    const float tetra_volume = volume_tri_tetrahedron_signed_v3_6x(v_pivot, v_step1, v_step2);
     total_volume += tetra_volume;
 
     /* Calculate the centroid of the tetrahedron formed by the 3 vertices

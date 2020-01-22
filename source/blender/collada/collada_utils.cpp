@@ -1149,7 +1149,7 @@ void bc_copy_m4d_v44(double (&r)[4][4], std::vector<std::vector<double>> &a)
 /**
  * Returns name of Active UV Layer or empty String if no active UV Layer defined
  */
-std::string bc_get_active_uvlayer_name(Mesh *me)
+static std::string bc_get_active_uvlayer_name(Mesh *me)
 {
   int num_layers = CustomData_number_of_layers(&me->ldata, CD_MLOOPUV);
   if (num_layers) {
@@ -1165,7 +1165,7 @@ std::string bc_get_active_uvlayer_name(Mesh *me)
  * Returns name of Active UV Layer or empty String if no active UV Layer defined.
  * Assuming the Object is of type MESH
  */
-std::string bc_get_active_uvlayer_name(Object *ob)
+static std::string bc_get_active_uvlayer_name(Object *ob)
 {
   Mesh *me = (Mesh *)ob->data;
   return bc_get_active_uvlayer_name(me);
@@ -1174,7 +1174,7 @@ std::string bc_get_active_uvlayer_name(Object *ob)
 /**
  * Returns UV Layer name or empty string if layer index is out of range
  */
-std::string bc_get_uvlayer_name(Mesh *me, int layer)
+static std::string bc_get_uvlayer_name(Mesh *me, int layer)
 {
   int num_layers = CustomData_number_of_layers(&me->ldata, CD_MLOOPUV);
   if (num_layers && layer < num_layers) {
@@ -1206,7 +1206,7 @@ static bNodeTree *prepare_material_nodetree(Material *ma)
   return ma->nodetree;
 }
 
-bNode *bc_add_node(
+static bNode *bc_add_node(
     bContext *C, bNodeTree *ntree, int node_type, int locx, int locy, std::string label)
 {
   bNode *node = nodeAddStaticNode(C, ntree, node_type);
@@ -1221,7 +1221,7 @@ bNode *bc_add_node(
   return node;
 }
 
-bNode *bc_add_node(bContext *C, bNodeTree *ntree, int node_type, int locx, int locy)
+static bNode *bc_add_node(bContext *C, bNodeTree *ntree, int node_type, int locx, int locy)
 {
   return bc_add_node(C, ntree, node_type, locx, locy, "");
 }
@@ -1324,7 +1324,7 @@ COLLADASW::ColorOrTexture bc_get_base_color(Material *ma)
   Color default_color = {0.8, 0.8, 0.8, 1.0};
   bNode *shader = bc_get_master_shader(ma);
   if (ma->use_nodes && shader) {
-    return bc_get_cot_from_shader(shader, "Base Color", default_color);
+    return bc_get_cot_from_shader(shader, "Base Color", default_color, false);
   }
   else {
     return bc_get_cot(default_color);
@@ -1414,16 +1414,17 @@ double bc_get_float_from_shader(bNode *shader, double &val, std::string nodeid)
 
 COLLADASW::ColorOrTexture bc_get_cot_from_shader(bNode *shader,
                                                  std::string nodeid,
-                                                 Color &default_color)
+                                                 Color &default_color,
+                                                 bool with_alpha)
 {
   bNodeSocket *socket = nodeFindSocket(shader, SOCK_IN, nodeid.c_str());
   if (socket) {
     bNodeSocketValueRGBA *dcol = (bNodeSocketValueRGBA *)socket->default_value;
     float *col = dcol->value;
-    return bc_get_cot(col);
+    return bc_get_cot(col, with_alpha);
   }
   else {
-    return bc_get_cot(default_color); /* default black */
+    return bc_get_cot(default_color, with_alpha); /* default black */
   }
 }
 
@@ -1447,9 +1448,9 @@ COLLADASW::ColorOrTexture bc_get_cot(float r, float g, float b, float a)
   return cot;
 }
 
-COLLADASW::ColorOrTexture bc_get_cot(Color col)
+COLLADASW::ColorOrTexture bc_get_cot(Color col, bool with_alpha)
 {
-  COLLADASW::Color color(col[0], col[1], col[2], col[3]);
+  COLLADASW::Color color(col[0], col[1], col[2], (with_alpha) ? col[3] : 1.0);
   COLLADASW::ColorOrTexture cot(color);
   return cot;
 }

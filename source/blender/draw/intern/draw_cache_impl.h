@@ -127,10 +127,7 @@ struct GPUBatch *DRW_mesh_batch_cache_get_surface(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_surface_edges(struct Mesh *me);
 struct GPUBatch **DRW_mesh_batch_cache_get_surface_shaded(struct Mesh *me,
                                                           struct GPUMaterial **gpumat_array,
-                                                          uint gpumat_array_len,
-                                                          char **auto_layer_names,
-                                                          int **auto_layer_is_srgb,
-                                                          int *auto_layer_count);
+                                                          uint gpumat_array_len);
 struct GPUBatch **DRW_mesh_batch_cache_get_surface_texpaint(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_surface_texpaint_single(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_surface_vertpaint(struct Mesh *me);
@@ -142,6 +139,7 @@ struct GPUBatch *DRW_mesh_batch_cache_get_edit_edges(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_edit_vnors(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_edit_lnors(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_edit_facedots(struct Mesh *me);
+struct GPUBatch *DRW_mesh_batch_cache_get_edit_skin_roots(struct Mesh *me);
 /* edit-mesh selection */
 struct GPUBatch *DRW_mesh_batch_cache_get_triangles_with_select_id(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_facedots_with_select_id(struct Mesh *me);
@@ -151,8 +149,8 @@ struct GPUBatch *DRW_mesh_batch_cache_get_verts_with_select_id(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_wireframes_face(struct Mesh *me);
 /* edit-mesh UV editor */
 struct GPUBatch *DRW_mesh_batch_cache_get_edituv_faces_stretch_area(struct Mesh *me,
-                                                                    float *tot_area,
-                                                                    float *tot_uv_area);
+                                                                    float **tot_area,
+                                                                    float **tot_uv_area);
 struct GPUBatch *DRW_mesh_batch_cache_get_edituv_faces_stretch_angle(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_edituv_faces(struct Mesh *me);
 struct GPUBatch *DRW_mesh_batch_cache_get_edituv_edges(struct Mesh *me);

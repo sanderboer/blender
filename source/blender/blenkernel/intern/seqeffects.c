@@ -3434,13 +3434,13 @@ static void do_gaussian_blur_effect_byte_x(Sequence *seq,
   float *gausstab_x;
   gausstab_x = make_gaussian_blur_kernel(data->size_x, size_x);
 
-  for (i = 0; i < y; ++i) {
-    for (j = 0; j < x; ++j) {
+  for (i = 0; i < y; i++) {
+    for (j = 0; j < x; j++) {
       int out_index = INDEX(j, i);
       float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       float accum_weight = 0.0f;
 
-      for (int current_x = j - size_x; current_x <= j + size_x; ++current_x) {
+      for (int current_x = j - size_x; current_x <= j + size_x; current_x++) {
         if (current_x < 0 || current_x >= frame_width) {
           /* Out of bounds. */
           continue;
@@ -3484,12 +3484,12 @@ static void do_gaussian_blur_effect_byte_y(Sequence *seq,
   float *gausstab_y;
   gausstab_y = make_gaussian_blur_kernel(data->size_y, size_y);
 
-  for (i = 0; i < y; ++i) {
-    for (j = 0; j < x; ++j) {
+  for (i = 0; i < y; i++) {
+    for (j = 0; j < x; j++) {
       int out_index = INDEX(j, i);
       float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       float accum_weight = 0.0f;
-      for (int current_y = i - size_y; current_y <= i + size_y; ++current_y) {
+      for (int current_y = i - size_y; current_y <= i + size_y; current_y++) {
         if (current_y < -start_line || current_y + start_line >= frame_height) {
           /* Out of bounds. */
           continue;
@@ -3532,12 +3532,12 @@ static void do_gaussian_blur_effect_float_x(Sequence *seq,
   float *gausstab_x;
   gausstab_x = make_gaussian_blur_kernel(data->size_x, size_x);
 
-  for (i = 0; i < y; ++i) {
-    for (j = 0; j < x; ++j) {
+  for (i = 0; i < y; i++) {
+    for (j = 0; j < x; j++) {
       int out_index = INDEX(j, i);
       float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       float accum_weight = 0.0f;
-      for (int current_x = j - size_x; current_x <= j + size_x; ++current_x) {
+      for (int current_x = j - size_x; current_x <= j + size_x; current_x++) {
         if (current_x < 0 || current_x >= frame_width) {
           /* Out of bounds. */
           continue;
@@ -3573,12 +3573,12 @@ static void do_gaussian_blur_effect_float_y(Sequence *seq,
   float *gausstab_y;
   gausstab_y = make_gaussian_blur_kernel(data->size_y, size_y);
 
-  for (i = 0; i < y; ++i) {
-    for (j = 0; j < x; ++j) {
+  for (i = 0; i < y; i++) {
+    for (j = 0; j < x; j++) {
       int out_index = INDEX(j, i);
       float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
       float accum_weight = 0.0f;
-      for (int current_y = i - size_y; current_y <= i + size_y; ++current_y) {
+      for (int current_y = i - size_y; current_y <= i + size_y; current_y++) {
         if (current_y < -start_line || current_y + start_line >= frame_height) {
           /* Out of bounds. */
           continue;
@@ -3822,7 +3822,7 @@ void BKE_sequencer_text_font_load(TextVars *data, const bool do_id_user)
     char path[FILE_MAX];
     STRNCPY(path, data->text_font->name);
     BLI_assert(BLI_thread_is_main());
-    BLI_path_abs(path, BKE_main_blendfile_path_from_global());
+    BLI_path_abs(path, ID_BLEND_PATH_FROM_GLOBAL(&data->text_font->id));
 
     data->text_blf_id = BLF_load(path);
   }

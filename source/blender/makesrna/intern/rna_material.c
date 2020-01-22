@@ -41,7 +41,7 @@ const EnumPropertyItem rna_enum_ramp_blend_items[] = {
     {0, "", ICON_NONE, NULL, NULL},
     {MA_RAMP_LIGHT, "LIGHTEN", 0, "Lighten", ""},
     {MA_RAMP_SCREEN, "SCREEN", 0, "Screen", ""},
-    {MA_RAMP_DODGE, "DODGE", 0, "Dodge", ""},
+    {MA_RAMP_DODGE, "DODGE", 0, "Color Dodge", ""},
     {MA_RAMP_ADD, "ADD", 0, "Add", ""},
     {0, "", ICON_NONE, NULL, NULL},
     {MA_RAMP_OVERLAY, "OVERLAY", 0, "Overlay", ""},
@@ -370,7 +370,6 @@ static void rna_def_material_display(StructRNA *srna)
 
   prop = RNA_def_property(srna, "roughness", PROP_FLOAT, PROP_FACTOR);
   RNA_def_property_float_sdna(prop, NULL, "roughness");
-  RNA_def_property_float_default(prop, 0.25f);
   RNA_def_property_range(prop, 0, 1);
   RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
   RNA_def_property_ui_text(prop, "Roughness", "Roughness of the material");
@@ -378,7 +377,6 @@ static void rna_def_material_display(StructRNA *srna)
 
   prop = RNA_def_property(srna, "specular_intensity", PROP_FLOAT, PROP_FACTOR);
   RNA_def_property_float_sdna(prop, NULL, "spec");
-  RNA_def_property_float_default(prop, 0.5f);
   RNA_def_property_range(prop, 0, 1);
   RNA_def_property_override_flag(prop, PROPOVERRIDE_OVERRIDABLE_LIBRARY);
   RNA_def_property_ui_text(prop, "Specular", "How intense (bright) the specular reflection is");

@@ -27,7 +27,6 @@
 
 #include "MEM_guardedalloc.h"
 
-#include "GPU_draw.h"
 #include "GPU_matrix.h"
 #include "GPU_batch.h"
 #include "GPU_immediate.h"
@@ -169,6 +168,7 @@ static const IconType icontypes[] = {
 #  define DEF_ICON_OBJECT_DATA(name) {ICON_TYPE_MONO_TEXTURE, TH_ICON_OBJECT_DATA},
 #  define DEF_ICON_MODIFIER(name) {ICON_TYPE_MONO_TEXTURE, TH_ICON_MODIFIER},
 #  define DEF_ICON_SHADING(name) {ICON_TYPE_MONO_TEXTURE, TH_ICON_SHADING},
+#  define DEF_ICON_FOLDER(name) {ICON_TYPE_MONO_TEXTURE, TH_ICON_FOLDER},
 #  define DEF_ICON_FUND(name) {ICON_TYPE_MONO_TEXTURE, TH_ICON_FUND},
 #  define DEF_ICON_VECTOR(name) {ICON_TYPE_VECTOR, 0},
 #  define DEF_ICON_COLOR(name) {ICON_TYPE_COLOR_TEXTURE, 0},
@@ -553,6 +553,8 @@ static void init_brush_icons(void)
   INIT_BRUSH_ICON(ICON_GPBRUSH_BLOCK, gp_brush_block);
   INIT_BRUSH_ICON(ICON_GPBRUSH_MARKER, gp_brush_marker);
   INIT_BRUSH_ICON(ICON_GPBRUSH_FILL, gp_brush_fill);
+  INIT_BRUSH_ICON(ICON_GPBRUSH_AIRBRUSH, gp_brush_airbrush);
+  INIT_BRUSH_ICON(ICON_GPBRUSH_CHISEL, gp_brush_chisel);
   INIT_BRUSH_ICON(ICON_GPBRUSH_ERASE_SOFT, gp_brush_erase_soft);
   INIT_BRUSH_ICON(ICON_GPBRUSH_ERASE_HARD, gp_brush_erase_hard);
   INIT_BRUSH_ICON(ICON_GPBRUSH_ERASE_STROKE, gp_brush_erase_stroke);
@@ -692,6 +694,7 @@ static void init_event_icons(void)
   INIT_EVENT_ICON(ICON_EVENT_PAGEUP, PAGEUPKEY, KM_ANY);
   INIT_EVENT_ICON(ICON_EVENT_PAGEDOWN, PAGEDOWNKEY, KM_ANY);
   INIT_EVENT_ICON(ICON_EVENT_RETURN, RETKEY, KM_ANY);
+  INIT_EVENT_ICON(ICON_EVENT_SPACEKEY, SPACEKEY, KM_ANY);
 
   g_di_event_list = di_next;
 
@@ -775,7 +778,7 @@ static ImBuf *create_mono_icon_with_border(ImBuf *buf,
           const int blurred_alpha_offset = by * (ICON_GRID_W + 2 * ICON_MONO_BORDER_OUTSET) + bx;
           const int offset_write = (sy + by) * buf->x + (sx + bx);
           const float blurred_alpha = blurred_alpha_buffer[blurred_alpha_offset];
-          float border_srgb[4] = {
+          const float border_srgb[4] = {
               0, 0, 0, MIN2(1.0, blurred_alpha * border_sharpness) * border_intensity};
 
           const unsigned int color_read = buf->rect[offset_write];
@@ -1581,7 +1584,6 @@ static struct {
   IconTextureDrawCall normal;
   IconTextureDrawCall border;
   bool enabled;
-  float mat[4][4];
 } g_icon_draw_cache = {{{{{0}}}}};
 
 void UI_icon_draw_cache_begin(void)
@@ -2059,6 +2061,12 @@ static int ui_id_brush_get_icon(const bContext *C, ID *id)
         case GP_BRUSH_ICON_FILL:
           br->id.icon_id = ICON_GPBRUSH_FILL;
           break;
+        case GP_BRUSH_ICON_AIRBRUSH:
+          br->id.icon_id = ICON_GPBRUSH_AIRBRUSH;
+          break;
+        case GP_BRUSH_ICON_CHISEL:
+          br->id.icon_id = ICON_GPBRUSH_CHISEL;
+          break;
         case GP_BRUSH_ICON_ERASE_SOFT:
           br->id.icon_id = ICON_GPBRUSH_ERASE_SOFT;
           break;
@@ -2144,6 +2152,9 @@ int UI_rnaptr_icon_get(bContext *C, PointerRNA *ptr, int rnaicon, const bool big
   }
   else if (RNA_struct_is_a(ptr->type, &RNA_TextureSlot)) {
     id = RNA_pointer_get(ptr, "texture").data;
+  }
+  else if (RNA_struct_is_a(ptr->type, &RNA_FileBrowserFSMenuEntry)) {
+    return RNA_int_get(ptr, "icon");
   }
   else if (RNA_struct_is_a(ptr->type, &RNA_DynamicPaintSurface)) {
     DynamicPaintSurface *surface = ptr->data;

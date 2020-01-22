@@ -37,12 +37,20 @@ struct KeyBlock;
 struct Object;
 struct SculptUndoNode;
 struct bContext;
+struct SculptPoseIKChainSegment;
 
 bool sculpt_mode_poll(struct bContext *C);
 bool sculpt_mode_poll_view3d(struct bContext *C);
 /* checks for a brush, not just sculpt mode */
 bool sculpt_poll(struct bContext *C);
 bool sculpt_poll_view3d(struct bContext *C);
+
+/* Updates */
+
+typedef enum SculptUpdateType {
+  SCULPT_UPDATE_COORDS = 1 << 0,
+  SCULPT_UPDATE_MASK = 1 << 1,
+} SculptUpdateType;
 
 /* Stroke */
 
@@ -57,6 +65,27 @@ bool sculpt_cursor_geometry_info_update(bContext *C,
                                         SculptCursorGeometryInfo *out,
                                         const float mouse[2],
                                         bool use_sampled_normal);
+void sculpt_geometry_preview_lines_update(bContext *C, struct SculptSession *ss, float radius);
+void sculpt_pose_calc_pose_data(struct Sculpt *sd,
+                                struct Object *ob,
+                                struct SculptSession *ss,
+                                float initial_location[3],
+                                float radius,
+                                float pose_offset,
+                                float *r_pose_origin,
+                                float *r_pose_factor);
+
+struct SculptPoseIKChain *sculpt_pose_ik_chain_init(struct Sculpt *sd,
+                                                    struct Object *ob,
+                                                    struct SculptSession *ss,
+                                                    struct Brush *br,
+                                                    const float initial_location[3],
+                                                    const float radius);
+
+void sculpt_pose_ik_chain_free(struct SculptPoseIKChain *ik_chain);
+
+/* Sculpt PBVH abstraction API */
+const float *sculpt_vertex_co_get(struct SculptSession *ss, int index);
 
 /* Dynamic topology */
 void sculpt_pbvh_clear(Object *ob);
@@ -118,6 +147,10 @@ typedef struct SculptUndoNode {
   int geom_totloop;
   int geom_totpoly;
 
+  /* pivot */
+  float pivot_pos[3];
+  float pivot_rot[4];
+
   size_t undo_size;
 } SculptUndoNode;
 
@@ -169,11 +202,35 @@ typedef struct SculptThreadedTaskData {
   float (*mat)[4];
   float (*vertCos)[3];
 
-  /* 0=towards view, 1=flipped */
-  float (*area_cos)[3];
-  float (*area_nos)[3];
-  int *count;
+  int filter_type;
+  float filter_strength;
+
+  bool use_area_cos;
+  bool use_area_nos;
   bool any_vertex_sampled;
+
+  float *prev_mask;
+
+  float *pose_factor;
+  float *pose_initial_co;
+  int pose_chain_segment;
+
+  float multiplane_scrape_angle;
+  float multiplane_scrape_planes[2][4];
+
+  float max_distance_squared;
+  float nearest_vertex_search_co[3];
+
+  int mask_expand_update_it;
+  bool mask_expand_invert_mask;
+  bool mask_expand_use_normals;
+  bool mask_expand_keep_prev_mask;
+
+  float transform_mats[8][4][4];
+
+  float dirty_mask_min;
+  float dirty_mask_max;
+  bool dirty_mask_dirty_only;
 
   ThreadMutex mutex;
 
@@ -202,7 +259,9 @@ typedef struct {
   struct Sculpt *sd;
   struct SculptSession *ss;
   float radius_squared;
+  const float *center;
   bool original;
+  bool ignore_fully_masked;
 } SculptSearchSphereData;
 
 typedef struct {
@@ -210,6 +269,7 @@ typedef struct {
   struct SculptSession *ss;
   float radius_squared;
   bool original;
+  bool ignore_fully_masked;
   struct DistRayAABB_Precalc *dist_ray_to_aabb_precalc;
 } SculptSearchCircleData;
 
@@ -235,6 +295,7 @@ float tex_strength(struct SculptSession *ss,
                    const short vno[3],
                    const float fno[3],
                    const float mask,
+                   const int vertex_index,
                    const int thread_id);
 
 /* just for vertex paint. */
@@ -266,6 +327,10 @@ typedef struct StrokeCache {
   float true_last_location[3];
   float location[3];
   float last_location[3];
+
+  /* Original pixel radius with the pressure curve applied for dyntopo detail size */
+  float dyntopo_pixel_radius;
+
   bool is_last_valid;
 
   bool pen_flip;
@@ -322,6 +387,9 @@ typedef struct StrokeCache {
   bool original;
   float anchored_location[3];
 
+  /* Pose brush */
+  struct SculptPoseIKChain *pose_ik_chain;
+
   float vertex_rotation; /* amount to rotate the vertices when using rotate brush */
   struct Dial *dial;
 
@@ -336,10 +404,33 @@ typedef struct StrokeCache {
   float true_gravity_direction[3];
   float gravity_direction[3];
 
+  float *automask;
+
+  float stroke_local_mat[4][4];
+  float multiplane_scrape_sampled_angle;
+
   rcti previous_r; /* previous redraw rectangle */
   rcti current_r;  /* current redraw rectangle */
 
 } StrokeCache;
+
+typedef struct FilterCache {
+  bool enabled_axis[3];
+  int random_seed;
+
+  /* unmasked nodes */
+  PBVHNode **nodes;
+  int totnode;
+
+  /* mask expand iteration caches */
+  int mask_update_current_it;
+  int mask_update_last_it;
+  int *mask_update_it;
+  float *normal_factor;
+  float *edge_factor;
+  float *prev_mask;
+  float mask_expand_initial_co[3];
+} FilterCache;
 
 void sculpt_cache_calc_brushdata_symm(StrokeCache *cache,
                                       const char symm,
@@ -357,7 +448,5 @@ void sculpt_vertcos_to_key(Object *ob, KeyBlock *kb, const float (*vertCos)[3]);
 void sculpt_update_object_bounding_box(struct Object *ob);
 
 bool sculpt_get_redraw_rect(struct ARegion *ar, struct RegionView3D *rv3d, Object *ob, rcti *rect);
-
-#define SCULPT_THREADED_LIMIT 4
 
 #endif

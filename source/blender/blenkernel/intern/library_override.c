@@ -36,6 +36,7 @@
 #include "BKE_main.h"
 
 #include "BLI_utildefines.h"
+#include "BLI_ghash.h"
 #include "BLI_listbase.h"
 #include "BLI_string.h"
 
@@ -57,7 +58,7 @@ static void bke_override_property_operation_clear(IDOverrideLibraryPropertyOpera
 
 /* Temp, for until library override is ready and tested enough to go 'public',
  * we hide it by default in UI and such. */
-static bool _override_library_enabled = false;
+static bool _override_library_enabled = true;
 
 void BKE_override_library_enable(const bool do_enable)
 {
@@ -148,6 +149,10 @@ void BKE_override_library_clear(IDOverrideLibrary *override, const bool do_id_us
 {
   BLI_assert(override != NULL);
 
+  if (override->runtime != NULL) {
+    BLI_ghash_clear(override->runtime, NULL, NULL);
+  }
+
   for (IDOverrideLibraryProperty *op = override->properties.first; op; op = op->next) {
     bke_override_property_clear(op);
   }
@@ -163,6 +168,11 @@ void BKE_override_library_clear(IDOverrideLibrary *override, const bool do_id_us
 void BKE_override_library_free(struct IDOverrideLibrary **override, const bool do_id_user)
 {
   BLI_assert(*override != NULL);
+
+  if ((*override)->runtime != NULL) {
+    BLI_ghash_free((*override)->runtime, NULL, NULL);
+    (*override)->runtime = NULL;
+  }
 
   BKE_override_library_clear(*override, do_id_user);
   MEM_freeN(*override);
@@ -185,24 +195,34 @@ static ID *override_library_create_from(Main *bmain, ID *reference_id)
 }
 
 /** Create an overridden local copy of linked reference. */
-ID *BKE_override_library_create_from_id(Main *bmain, ID *reference_id)
+ID *BKE_override_library_create_from_id(Main *bmain, ID *reference_id, const bool do_tagged_remap)
 {
   BLI_assert(reference_id != NULL);
   BLI_assert(reference_id->lib != NULL);
 
   ID *local_id = override_library_create_from(bmain, reference_id);
 
-  /* Remapping, we obviously only want to affect local data
-   * (and not our own reference pointer to overridden ID). */
-  BKE_libblock_remap(bmain,
-                     reference_id,
-                     local_id,
-                     ID_REMAP_SKIP_INDIRECT_USAGE | ID_REMAP_SKIP_OVERRIDE_LIBRARY);
+  if (do_tagged_remap) {
+    ID *other_id;
+    FOREACH_MAIN_ID_BEGIN (bmain, other_id) {
+      if ((other_id->tag & LIB_TAG_DOIT) != 0 && other_id->lib == NULL) {
+        /* Note that using ID_REMAP_SKIP_INDIRECT_USAGE below is superfluous, as we only remap
+         * local IDs usages anyway... */
+        BKE_libblock_relink_ex(bmain,
+                               other_id,
+                               reference_id,
+                               local_id,
+                               ID_REMAP_SKIP_INDIRECT_USAGE | ID_REMAP_SKIP_OVERRIDE_LIBRARY);
+      }
+    }
+    FOREACH_MAIN_ID_END;
+  }
 
   return local_id;
 }
 
-/** Create overridden local copies of all tagged data-blocks in given Main.
+/**
+ * Create overridden local copies of all tagged data-blocks in given Main.
  *
  * \note Set id->newid of overridden libs with newly created overrides,
  * caller is responsible to clean those pointers before/after usage as needed.
@@ -276,15 +296,28 @@ bool BKE_override_library_create_from_tag(Main *bmain)
   return ret;
 }
 
+/* We only build override GHash on request. */
+BLI_INLINE IDOverrideLibraryRuntime *override_library_rna_path_mapping_ensure(
+    IDOverrideLibrary *override)
+{
+  if (override->runtime == NULL) {
+    override->runtime = BLI_ghash_new(BLI_ghashutil_strhash_p, BLI_ghashutil_strcmp, __func__);
+    for (IDOverrideLibraryProperty *op = override->properties.first; op != NULL; op = op->next) {
+      BLI_ghash_insert(override->runtime, op->rna_path, op);
+    }
+  }
+
+  return override->runtime;
+}
+
 /**
  * Find override property from given RNA path, if it exists.
  */
 IDOverrideLibraryProperty *BKE_override_library_property_find(IDOverrideLibrary *override,
                                                               const char *rna_path)
 {
-  /* XXX TODO we'll most likely want a runtime ghash to store that mapping at some point. */
-  return BLI_findstring_ptr(
-      &override->properties, rna_path, offsetof(IDOverrideLibraryProperty, rna_path));
+  IDOverrideLibraryRuntime *override_runtime = override_library_rna_path_mapping_ensure(override);
+  return BLI_ghash_lookup(override_runtime, rna_path);
 }
 
 /**
@@ -294,13 +327,16 @@ IDOverrideLibraryProperty *BKE_override_library_property_get(IDOverrideLibrary *
                                                              const char *rna_path,
                                                              bool *r_created)
 {
-  /* XXX TODO we'll most likely want a runtime ghash to store that mapping at some point. */
   IDOverrideLibraryProperty *op = BKE_override_library_property_find(override, rna_path);
 
   if (op == NULL) {
     op = MEM_callocN(sizeof(IDOverrideLibraryProperty), __func__);
     op->rna_path = BLI_strdup(rna_path);
     BLI_addtail(&override->properties, op);
+
+    IDOverrideLibraryRuntime *override_runtime = override_library_rna_path_mapping_ensure(
+        override);
+    BLI_ghash_insert(override_runtime, op->rna_path, op);
 
     if (r_created) {
       *r_created = true;
@@ -346,6 +382,9 @@ void BKE_override_library_property_delete(IDOverrideLibrary *override,
                                           IDOverrideLibraryProperty *override_property)
 {
   bke_override_property_clear(override_property);
+  if (override->runtime != NULL) {
+    BLI_ghash_remove(override->runtime, override_property->rna_path, NULL, NULL);
+  }
   BLI_freelinkN(&override->properties, override_property);
 }
 
@@ -632,6 +671,13 @@ bool BKE_override_library_operations_create(Main *bmain, ID *local, const bool f
   bool ret = false;
 
   if (!is_template && (force_auto || local->override_library->flag & OVERRIDE_LIBRARY_AUTO)) {
+    /* Do not attempt to generate overriding rules from an empty place-holder generated by link
+     * code when it cannot find to actual library/ID. Much better to keep the local datablock as
+     * is in the file in that case, until broken lib is fixed. */
+    if (ID_MISSING(local->override_library->reference)) {
+      return ret;
+    }
+
     PointerRNA rnaptr_local, rnaptr_reference;
     RNA_id_pointer_create(local, &rnaptr_local);
     RNA_id_pointer_create(local->override_library->reference, &rnaptr_reference);
@@ -681,6 +727,13 @@ void BKE_main_override_library_operations_create(Main *bmain, const bool force_a
 void BKE_override_library_update(Main *bmain, ID *local)
 {
   if (local->override_library == NULL || local->override_library->reference == NULL) {
+    return;
+  }
+
+  /* Do not attempt to apply overriding rules over an empty place-holder generated by link code
+   * when it cannot find to actual library/ID. Much better to keep the local datablock as loaded
+   * from the file in that case, until broken lib is fixed. */
+  if (ID_MISSING(local->override_library->reference)) {
     return;
   }
 

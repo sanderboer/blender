@@ -114,7 +114,10 @@ enum {
                          LIB_ID_CREATE_NO_DEG_TAG | LIB_ID_COPY_NO_PREVIEW | LIB_ID_COPY_CACHES,
 };
 
-void BKE_libblock_copy_ex(struct Main *bmain, const struct ID *id, struct ID **r_newid, int flag);
+void BKE_libblock_copy_ex(struct Main *bmain,
+                          const struct ID *id,
+                          struct ID **r_newid,
+                          const int orig_flag);
 void *BKE_libblock_copy(struct Main *bmain, const struct ID *id) ATTR_WARN_UNUSED_RESULT
     ATTR_NONNULL();
 /* Special version. sued by datablock localization. */
@@ -172,6 +175,7 @@ void BKE_libblock_management_usercounts_clear(struct Main *bmain, void *idv);
 
 void BKE_id_lib_local_paths(struct Main *bmain, struct Library *lib, struct ID *id);
 void id_lib_extern(struct ID *id);
+void id_lib_indirect_weak_link(struct ID *id);
 void BKE_library_filepath_set(struct Main *bmain, struct Library *lib, const char *filepath);
 void id_us_ensure_real(struct ID *id);
 void id_us_clear_real(struct ID *id);
@@ -195,7 +199,7 @@ bool BKE_id_copy_is_allowed(const struct ID *id);
 bool BKE_id_copy(struct Main *bmain, const struct ID *id, struct ID **newid);
 bool BKE_id_copy_ex(struct Main *bmain, const struct ID *id, struct ID **r_newid, const int flag);
 void BKE_id_swap(struct Main *bmain, struct ID *id_a, struct ID *id_b);
-void id_sort_by_name(struct ListBase *lb, struct ID *id);
+void id_sort_by_name(struct ListBase *lb, struct ID *id, struct ID *id_sorting_hint);
 void BKE_id_expand_local(struct Main *bmain, struct ID *id);
 void BKE_id_copy_ensure_local(struct Main *bmain, const struct ID *old_id, struct ID *new_id);
 

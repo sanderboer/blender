@@ -138,7 +138,7 @@ ccl_device void subsurface_color_bump_blur(
 
   if (bump || texture_blur > 0.0f) {
     /* average color and normal at incoming point */
-    shader_eval_surface(kg, sd, state, state->flag);
+    shader_eval_surface(kg, sd, state, NULL, state->flag);
     float3 in_color = shader_bssrdf_sum(sd, (bump) ? N : NULL, NULL);
 
     /* we simply divide out the average color and multiply with the average
@@ -353,13 +353,19 @@ ccl_device void subsurface_random_walk_coefficients(const ShaderClosure *sc,
   *weight = safe_divide_color(bssrdf->weight, A);
 }
 
-ccl_device_noinline bool subsurface_random_walk(KernelGlobals *kg,
-                                                LocalIntersection *ss_isect,
-                                                ShaderData *sd,
-                                                ccl_addr_space PathState *state,
-                                                const ShaderClosure *sc,
-                                                const float bssrdf_u,
-                                                const float bssrdf_v)
+#ifdef __KERNEL_OPTIX__
+ccl_device_inline /* inline trace calls */
+#else
+ccl_device_noinline
+#endif
+    bool
+    subsurface_random_walk(KernelGlobals *kg,
+                           LocalIntersection *ss_isect,
+                           ShaderData *sd,
+                           ccl_addr_space PathState *state,
+                           const ShaderClosure *sc,
+                           const float bssrdf_u,
+                           const float bssrdf_v)
 {
   /* Sample diffuse surface scatter into the object. */
   float3 D;

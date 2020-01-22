@@ -65,8 +65,8 @@ static void requiredDataMask(Object *UNUSED(ob),
 
   if ((smd->shrinkType == MOD_SHRINKWRAP_PROJECT) &&
       (smd->projAxis == MOD_SHRINKWRAP_PROJECT_OVER_NORMAL)) {
-    r_cddata_masks->vmask |=
-        CD_MASK_MVERT; /* XXX Really? These should always be present, always... */
+    /* XXX Really? These should always be present, always... */
+    r_cddata_masks->vmask |= CD_MASK_MVERT;
   }
 }
 
@@ -108,8 +108,10 @@ static void deformVerts(ModifierData *md,
   struct Scene *scene = DEG_get_evaluated_scene(ctx->depsgraph);
   Mesh *mesh_src = NULL;
 
-  if (ctx->object->type == OB_MESH) {
-    /* mesh_src is only needed for vgroups. */
+  if (ELEM(ctx->object->type, OB_MESH, OB_LATTICE) ||
+      (swmd->shrinkType == MOD_SHRINKWRAP_PROJECT)) {
+    /* mesh_src is needed for vgroups, but also used as ShrinkwrapCalcData.vert when projecting.
+     * Avoid time-consuming mesh conversion for curves when not projecting. */
     mesh_src = MOD_deform_mesh_eval_get(ctx->object, NULL, mesh, NULL, numVerts, false, false);
   }
 

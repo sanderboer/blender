@@ -947,6 +947,68 @@ void nodeChainIter(const bNodeTree *ntree,
   }
 }
 
+static void iter_backwards_ex(const bNodeTree *ntree,
+                              const bNode *node_start,
+                              bool (*callback)(bNode *, bNode *, void *),
+                              void *userdata,
+                              char recursion_mask)
+{
+  LISTBASE_FOREACH (bNodeSocket *, sock, &node_start->inputs) {
+    bNodeLink *link = sock->link;
+    if (link == NULL) {
+      continue;
+    }
+    if ((link->flag & NODE_LINK_VALID) == 0) {
+      /* Skip links marked as cyclic. */
+      continue;
+    }
+    if (link->fromnode->iter_flag & recursion_mask) {
+      continue;
+    }
+    else {
+      link->fromnode->iter_flag |= recursion_mask;
+    }
+
+    if (!callback(link->fromnode, link->tonode, userdata)) {
+      return;
+    }
+    iter_backwards_ex(ntree, link->fromnode, callback, userdata, recursion_mask);
+  }
+}
+
+/**
+ * Iterate over a chain of nodes, starting with \a node_start, executing
+ * \a callback for each node (which can return false to end iterator).
+ *
+ * Faster than nodeChainIter. Iter only once per node.
+ * Can be called recursively (using another nodeChainIterBackwards) by
+ * setting the recursion_lvl accordingly.
+ *
+ * \note Needs updated socket links (ntreeUpdateTree).
+ * \note Recursive
+ */
+void nodeChainIterBackwards(const bNodeTree *ntree,
+                            const bNode *node_start,
+                            bool (*callback)(bNode *, bNode *, void *),
+                            void *userdata,
+                            int recursion_lvl)
+{
+  if (!node_start) {
+    return;
+  }
+
+  /* Limited by iter_flag type. */
+  BLI_assert(recursion_lvl < 8);
+  char recursion_mask = (1 << recursion_lvl);
+
+  /* Reset flag. */
+  LISTBASE_FOREACH (bNode *, node, &ntree->nodes) {
+    node->iter_flag &= ~recursion_mask;
+  }
+
+  iter_backwards_ex(ntree, node_start, callback, userdata, recursion_mask);
+}
+
 /**
  * Iterate over all parents of \a node, executing \a callback for each parent
  * (which can return false to end iterator)
@@ -1027,7 +1089,11 @@ static void node_socket_copy(bNodeSocket *sock_dst, const bNodeSocket *sock_src,
 
 /* keep socket listorder identical, for copying links */
 /* ntree is the target tree */
-bNode *BKE_node_copy_ex(bNodeTree *ntree, const bNode *node_src, const int flag)
+/* unique_name needs to be true. It's only disabled for speed when doing GPUnodetrees. */
+bNode *BKE_node_copy_ex(bNodeTree *ntree,
+                        const bNode *node_src,
+                        const int flag,
+                        const bool unique_name)
 {
   bNode *node_dst = MEM_callocN(sizeof(bNode), "dupli node");
   bNodeSocket *sock_dst, *sock_src;
@@ -1036,7 +1102,9 @@ bNode *BKE_node_copy_ex(bNodeTree *ntree, const bNode *node_src, const int flag)
   *node_dst = *node_src;
   /* can be called for nodes outside a node tree (e.g. clipboard) */
   if (ntree) {
-    nodeUniqueName(ntree, node_dst);
+    if (unique_name) {
+      nodeUniqueName(ntree, node_dst);
+    }
 
     BLI_addtail(&ntree->nodes, node_dst);
   }
@@ -1084,8 +1152,9 @@ bNode *BKE_node_copy_ex(bNodeTree *ntree, const bNode *node_src, const int flag)
 
   node_dst->new_node = NULL;
 
-  bool do_copy_api = !((flag & LIB_ID_CREATE_NO_MAIN) || (flag & LIB_ID_COPY_LOCALIZE));
-  if (node_dst->typeinfo->copyfunc_api && do_copy_api) {
+  /* Only call copy function when a copy is made for the main database, not
+   * for cases like the dependency graph and localization. */
+  if (node_dst->typeinfo->copyfunc_api && !(flag & LIB_ID_CREATE_NO_MAIN)) {
     PointerRNA ptr;
     RNA_pointer_create((ID *)ntree, &RNA_Node, node_dst, &ptr);
 
@@ -1123,7 +1192,7 @@ static void node_set_new_pointers(bNode *node_src, bNode *new_node)
 
 bNode *BKE_node_copy_store_new_pointers(bNodeTree *ntree, bNode *node_src, const int flag)
 {
-  bNode *new_node = BKE_node_copy_ex(ntree, node_src, flag);
+  bNode *new_node = BKE_node_copy_ex(ntree, node_src, flag, true);
   node_set_new_pointers(node_src, new_node);
   return new_node;
 }
@@ -1453,7 +1522,7 @@ void BKE_node_tree_copy_data(Main *UNUSED(bmain),
   GHash *new_pointers = BLI_ghash_ptr_new("BKE_node_tree_copy_data");
 
   for (const bNode *node_src = ntree_src->nodes.first; node_src; node_src = node_src->next) {
-    bNode *new_node = BKE_node_copy_ex(ntree_dst, node_src, flag_subdata);
+    bNode *new_node = BKE_node_copy_ex(ntree_dst, node_src, flag_subdata, true);
     BLI_ghash_insert(new_pointers, (void *)node_src, new_node);
     /* Store mapping to inputs. */
     bNodeSocket *new_input_sock = new_node->inputs.first;
@@ -1532,7 +1601,7 @@ void BKE_node_tree_copy_data(Main *UNUSED(bmain),
 bNodeTree *ntreeCopyTree_ex(const bNodeTree *ntree, Main *bmain, const bool do_id_user)
 {
   bNodeTree *ntree_copy;
-  const int flag = do_id_user ? LIB_ID_CREATE_NO_USER_REFCOUNT | LIB_ID_CREATE_NO_MAIN : 0;
+  const int flag = do_id_user ? 0 : LIB_ID_CREATE_NO_USER_REFCOUNT | LIB_ID_CREATE_NO_MAIN;
   BKE_id_copy_ex(bmain, (ID *)ntree, (ID **)&ntree_copy, flag);
   return ntree_copy;
 }
@@ -3146,7 +3215,7 @@ void BKE_node_instance_hash_remove_untagged(bNodeInstanceHash *hash,
     }
   }
 
-  for (i = 0; i < num_untagged; ++i) {
+  for (i = 0; i < num_untagged; i++) {
     BKE_node_instance_hash_remove(hash, untagged[i], valfreefp);
   }
 
@@ -3348,7 +3417,7 @@ void ntreeUpdateTree(Main *bmain, bNodeTree *ntree)
     return;
   }
 
-  /* avoid reentrant updates, can be caused by RNA update callbacks */
+  /* Avoid re-entrant updates, can be caused by RNA update callbacks. */
   if (ntree->is_updating) {
     return;
   }
@@ -3409,7 +3478,7 @@ void ntreeUpdateTree(Main *bmain, bNodeTree *ntree)
 
 void nodeUpdate(bNodeTree *ntree, bNode *node)
 {
-  /* avoid reentrant updates, can be caused by RNA update callbacks */
+  /* Avoid re-entrant updates, can be caused by RNA update callbacks. */
   if (ntree->is_updating) {
     return;
   }
@@ -3436,7 +3505,7 @@ bool nodeUpdateID(bNodeTree *ntree, ID *id)
     return changed;
   }
 
-  /* avoid reentrant updates, can be caused by RNA update callbacks */
+  /* Avoid re-entrant updates, can be caused by RNA update callbacks. */
   if (ntree->is_updating) {
     return changed;
   }
@@ -3571,7 +3640,7 @@ static bool unique_socket_template_identifier_check(void *arg, const char *name)
     bNodeSocketTemplate *ntemp;
   } *data = arg;
 
-  for (ntemp = data->list; ntemp->type >= 0; ++ntemp) {
+  for (ntemp = data->list; ntemp->type >= 0; ntemp++) {
     if (ntemp != data->ntemp) {
       if (STREQ(ntemp->identifier, name)) {
         return true;
@@ -3614,22 +3683,22 @@ void node_type_socket_templates(struct bNodeType *ntype,
   /* automatically generate unique identifiers */
   if (inputs) {
     /* clear identifier strings (uninitialized memory) */
-    for (ntemp = inputs; ntemp->type >= 0; ++ntemp) {
+    for (ntemp = inputs; ntemp->type >= 0; ntemp++) {
       ntemp->identifier[0] = '\0';
     }
 
-    for (ntemp = inputs; ntemp->type >= 0; ++ntemp) {
+    for (ntemp = inputs; ntemp->type >= 0; ntemp++) {
       BLI_strncpy(ntemp->identifier, ntemp->name, sizeof(ntemp->identifier));
       unique_socket_template_identifier(inputs, ntemp, ntemp->identifier, '_');
     }
   }
   if (outputs) {
     /* clear identifier strings (uninitialized memory) */
-    for (ntemp = outputs; ntemp->type >= 0; ++ntemp) {
+    for (ntemp = outputs; ntemp->type >= 0; ntemp++) {
       ntemp->identifier[0] = '\0';
     }
 
-    for (ntemp = outputs; ntemp->type >= 0; ++ntemp) {
+    for (ntemp = outputs; ntemp->type >= 0; ntemp++) {
       BLI_strncpy(ntemp->identifier, ntemp->name, sizeof(ntemp->identifier));
       unique_socket_template_identifier(outputs, ntemp, ntemp->identifier, '_');
     }
@@ -3914,6 +3983,7 @@ static void registerShaderNodes(void)
   register_node_type_sh_tex_coord();
   register_node_type_sh_particle_info();
   register_node_type_sh_bump();
+  register_node_type_sh_vertex_color();
 
   register_node_type_sh_background();
   register_node_type_sh_bsdf_anisotropic();
@@ -3943,6 +4013,7 @@ static void registerShaderNodes(void)
   register_node_type_sh_output_material();
   register_node_type_sh_output_world();
   register_node_type_sh_output_linestyle();
+  register_node_type_sh_output_aov();
 
   register_node_type_sh_tex_image();
   register_node_type_sh_tex_environment();

@@ -329,7 +329,7 @@ NUMPY_FORCE_BUILD=false
 NUMPY_FORCE_REBUILD=false
 NUMPY_SKIP=false
 
-BOOST_VERSION="1.68.0"
+BOOST_VERSION="1.70.0"
 BOOST_VERSION_MIN="1.49"
 BOOST_FORCE_BUILD=false
 BOOST_FORCE_REBUILD=false
@@ -341,9 +341,9 @@ OCIO_FORCE_BUILD=false
 OCIO_FORCE_REBUILD=false
 OCIO_SKIP=false
 
-OPENEXR_VERSION="2.3.0"
+OPENEXR_VERSION="2.4.0"
 OPENEXR_VERSION_MIN="2.0.1"
-ILMBASE_VERSION="2.3.0"
+ILMBASE_VERSION="2.4.0"
 ILMBASE_VERSION_MIN="2.3"
 OPENEXR_FORCE_BUILD=false
 OPENEXR_FORCE_REBUILD=false
@@ -379,16 +379,16 @@ OSD_FORCE_REBUILD=false
 OSD_SKIP=false
 
 # OpenVDB needs to be compiled for now
-OPENVDB_BLOSC_VERSION="1.14.4"
+OPENVDB_BLOSC_VERSION="1.5.0"
 
-OPENVDB_VERSION="5.1.0"
+OPENVDB_VERSION="7.0.0"
 OPENVDB_VERSION_MIN=$OPENVDB_VERSION
 OPENVDB_FORCE_BUILD=false
 OPENVDB_FORCE_REBUILD=false
 OPENVDB_SKIP=false
 
 # Alembic needs to be compiled for now
-ALEMBIC_VERSION="1.7.8"
+ALEMBIC_VERSION="1.7.12"
 ALEMBIC_VERSION_MIN=$ALEMBIC_VERSION
 ALEMBIC_FORCE_BUILD=false
 ALEMBIC_FORCE_REBUILD=false
@@ -431,6 +431,9 @@ X264_VERSION_MIN=0.118
 VPX_USE=false
 VPX_VERSION_MIN=0.9.7
 VPX_DEV=""
+OPUS_USE=false
+OPUS_VERSION_MIN=1.1.1
+OPUS_DEV=""
 MP3LAME_USE=false
 MP3LAME_DEV=""
 OPENJPEG_USE=false
@@ -764,7 +767,7 @@ while true; do
     ;;
     *)
       PRINT ""
-      ERROR "Wrong parameter! Usage:"
+      ERROR "Wrong parameter '$1'; Usage:"
       PRINT ""
       PRINT "`eval _echo "$COMMON_INFO"`"
       PRINT ""
@@ -2350,7 +2353,7 @@ compile_ALEMBIC() {
 
     prepare_opt
 
-    if [ ! -d $_src -o true ]; then
+    if [ ! -d $_src ]; then
       mkdir -p $SRC
       download ALEMBIC_SOURCE[@] "$_src.tar.gz"
 
@@ -2754,6 +2757,10 @@ compile_FFmpeg() {
       extra="$extra --enable-libvpx"
     fi
 
+    if [ "$OPUS_USE" = true ]; then
+      extra="$extra --enable-libopus"
+    fi
+
     if [ "$MP3LAME_USE" = true ]; then
       extra="$extra --enable-libmp3lame"
     fi
@@ -2990,6 +2997,14 @@ install_DEB() {
     if [ $? -eq 0 ]; then
       install_packages_DEB $VPX_DEV
       VPX_USE=true
+    fi
+
+    PRINT ""
+    OPUS_DEV="libopus-dev"
+    check_package_version_ge_DEB $OPUS_DEV $OPUS_VERSION_MIN
+    if [ $? -eq 0 ]; then
+      install_packages_DEB $OPUS_DEV
+      OPUS_USE=true
     fi
   fi
 
@@ -3601,8 +3616,17 @@ install_RPM() {
       install_packages_RPM $VPX_DEV
       VPX_USE=true
     fi
+
     PRINT ""
     install_packages_RPM libspnav-devel
+
+    PRINT ""
+    OPUS_DEV="libopus-devel"
+    check_package_version_ge_RPM $OPUS_DEV $OPUS_VERSION_MIN
+    if [ $? -eq 0 ]; then
+      install_packages_RPM $OPUS_DEV
+      OPUS_USE=true
+    fi
   fi
 
   PRINT ""
@@ -4076,6 +4100,14 @@ install_ARCH() {
     if [ $? -eq 0 ]; then
       install_packages_ARCH $VPX_DEV
       VPX_USE=true
+    fi
+
+    PRINT ""
+    OPUS_DEV="opus"
+    check_package_version_ge_ARCH $OPUS_DEV $OPUS_VERSION_MIN
+    if [ $? -eq 0 ]; then
+      install_packages_ARCH $OPUS_DEV
+      OPUS_USE=true
     fi
   fi
 
@@ -4631,6 +4663,10 @@ print_info_ffmpeglink() {
 
   if [ "$VPX_USE" = true ]; then
     _packages="$_packages $VPX_DEV"
+  fi
+
+  if [ "$OPUS_USE" = true ]; then
+    _packages="$_packages $OPUS_DEV"
   fi
 
   if [ "$MP3LAME_USE" = true ]; then

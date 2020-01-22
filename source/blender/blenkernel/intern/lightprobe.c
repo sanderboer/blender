@@ -21,8 +21,11 @@
  * \ingroup bke
  */
 
+#include <string.h>
+
 #include "DNA_object_types.h"
 #include "DNA_lightprobe_types.h"
+#include "DNA_defaults.h"
 
 #include "BLI_utildefines.h"
 
@@ -35,17 +38,31 @@ void BKE_lightprobe_init(LightProbe *probe)
 {
   BLI_assert(MEMCMP_STRUCT_AFTER_IS_ZERO(probe, id));
 
-  probe->grid_resolution_x = probe->grid_resolution_y = probe->grid_resolution_z = 4;
-  probe->distinf = 2.5f;
-  probe->distpar = 2.5f;
-  probe->falloff = 0.2f;
-  probe->clipsta = 0.8f;
-  probe->clipend = 40.0f;
-  probe->vis_bias = 1.0f;
-  probe->vis_blur = 0.2f;
-  probe->intensity = 1.0f;
+  MEMCPY_STRUCT_AFTER(probe, DNA_struct_default_get(LightProbe), id);
+}
 
-  probe->flag = LIGHTPROBE_FLAG_SHOW_INFLUENCE;
+void BKE_lightprobe_type_set(LightProbe *probe, const short lightprobe_type)
+{
+  probe->type = lightprobe_type;
+
+  switch (probe->type) {
+    case LIGHTPROBE_TYPE_GRID:
+      probe->distinf = 0.3f;
+      probe->falloff = 1.0f;
+      probe->clipsta = 0.01f;
+      break;
+    case LIGHTPROBE_TYPE_PLANAR:
+      probe->distinf = 0.1f;
+      probe->falloff = 0.5f;
+      probe->clipsta = 0.001f;
+      break;
+    case LIGHTPROBE_TYPE_CUBE:
+      probe->attenuation_type = LIGHTPROBE_SHAPE_ELIPSOID;
+      break;
+    default:
+      BLI_assert(!"LightProbe type not configured.");
+      break;
+  }
 }
 
 void *BKE_lightprobe_add(Main *bmain, const char *name)

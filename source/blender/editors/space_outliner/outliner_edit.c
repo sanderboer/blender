@@ -674,7 +674,7 @@ void OUTLINER_OT_id_remap(wmOperatorType *ot)
   PropertyRNA *prop;
 
   /* identifiers */
-  ot->name = "Outliner ID data Remap";
+  ot->name = "Outliner ID Data Remap";
   ot->idname = "OUTLINER_OT_id_remap";
 
   /* callbacks */
@@ -770,7 +770,7 @@ static int outliner_id_copy_exec(bContext *C, wmOperator *op)
   BLI_make_file_string("/", str, BKE_tempdir_base(), "copybuffer.blend");
   BKE_copybuffer_save(bmain, str, op->reports);
 
-  BKE_reportf(op->reports, RPT_INFO, "Copied %d selected data-blocks", num_ids);
+  BKE_reportf(op->reports, RPT_INFO, "Copied %d selected data-block(s)", num_ids);
 
   return OPERATOR_FINISHED;
 }
@@ -804,7 +804,7 @@ static int outliner_id_paste_exec(bContext *C, wmOperator *op)
 
   WM_event_add_notifier(C, NC_WINDOW, NULL);
 
-  BKE_reportf(op->reports, RPT_INFO, "%d data-blocks pasted", num_pasted);
+  BKE_reportf(op->reports, RPT_INFO, "%d data-block(s) pasted", num_pasted);
   return OPERATOR_FINISHED;
 }
 
@@ -1311,6 +1311,10 @@ static int outliner_show_active_exec(bContext *C, wmOperator *UNUSED(op))
       outliner_show_active(so, ar, te, id);
     }
 
+    /* Also open back from the active_element (only done for the first found occurrence of ID
+     * though). */
+    outliner_show_active(so, ar, active_element, id);
+
     /* Center view on first element found */
     int size_y = BLI_rcti_size_y(&v2d->mask) + 1;
     int ytop = (active_element->ys + (size_y / 2));
@@ -1600,7 +1604,11 @@ static void tree_element_show_hierarchy(Scene *scene, SpaceOutliner *soops, List
   for (te = lb->first; te; te = te->next) {
     tselem = TREESTORE(te);
 
-    if (tselem->type == 0) {
+    if (ELEM(tselem->type,
+             0,
+             TSE_SCENE_OBJECTS_BASE,
+             TSE_VIEW_COLLECTION_BASE,
+             TSE_LAYER_COLLECTION)) {
       if (te->idcode == ID_SCE) {
         if (tselem->id != (ID *)scene) {
           tselem->flag |= TSE_CLOSED;
@@ -2169,9 +2177,15 @@ void OUTLINER_OT_keyingset_remove_selected(wmOperatorType *ot)
 static bool ed_operator_outliner_id_orphans_active(bContext *C)
 {
   ScrArea *sa = CTX_wm_area(C);
-  if ((sa) && (sa->spacetype == SPACE_OUTLINER)) {
-    SpaceOutliner *so = CTX_wm_space_outliner(C);
-    return (so->outlinevis == SO_ID_ORPHANS);
+  if (sa != NULL) {
+    if (sa->spacetype == SPACE_TOPBAR) {
+      return true;
+    }
+
+    if (sa->spacetype == SPACE_OUTLINER) {
+      SpaceOutliner *so = CTX_wm_space_outliner(C);
+      return (so->outlinevis == SO_ID_ORPHANS);
+    }
   }
   return 0;
 }
@@ -2238,6 +2252,7 @@ static int outliner_orphans_purge_invoke(bContext *C, wmOperator *op, const wmEv
 static int outliner_orphans_purge_exec(bContext *C, wmOperator *op)
 {
   Main *bmain = CTX_data_main(C);
+  ScrArea *sa = CTX_wm_area(C);
   SpaceOutliner *soops = CTX_wm_space_outliner(C);
   int num_tagged[INDEX_ID_MAX] = {0};
 
@@ -2257,14 +2272,16 @@ static int outliner_orphans_purge_exec(bContext *C, wmOperator *op)
 
   BKE_id_multi_tagged_delete(bmain);
 
-  BKE_reportf(op->reports, RPT_INFO, "Deleted %d data-blocks", num_tagged[INDEX_ID_NULL]);
+  BKE_reportf(op->reports, RPT_INFO, "Deleted %d data-block(s)", num_tagged[INDEX_ID_NULL]);
 
   /* XXX: tree management normally happens from draw_outliner(), but when
    *      you're clicking to fast on Delete object from context menu in
    *      outliner several mouse events can be handled in one cycle without
    *      handling notifiers/redraw which leads to deleting the same object twice.
    *      cleanup tree here to prevent such cases. */
-  outliner_cleanup_tree(soops);
+  if ((sa != NULL) && (sa->spacetype == SPACE_OUTLINER)) {
+    outliner_cleanup_tree(soops);
+  }
 
   DEG_relations_tag_update(bmain);
   WM_event_add_notifier(C, NC_ID | NA_EDITED, NULL);

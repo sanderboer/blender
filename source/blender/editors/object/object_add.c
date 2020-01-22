@@ -603,27 +603,8 @@ static int lightprobe_add_exec(bContext *C, wmOperator *op)
   copy_v3_fl(ob->scale, radius);
 
   probe = (LightProbe *)ob->data;
-  probe->type = type;
 
-  switch (type) {
-    case LIGHTPROBE_TYPE_GRID:
-      probe->distinf = 0.3f;
-      probe->falloff = 1.0f;
-      probe->clipsta = 0.01f;
-      break;
-    case LIGHTPROBE_TYPE_PLANAR:
-      probe->distinf = 0.1f;
-      probe->falloff = 0.5f;
-      probe->clipsta = 0.001f;
-      ob->empty_drawsize = 0.5f;
-      break;
-    case LIGHTPROBE_TYPE_CUBE:
-      probe->attenuation_type = LIGHTPROBE_SHAPE_ELIPSOID;
-      break;
-    default:
-      BLI_assert(!"LightProbe type not configured.");
-      break;
-  }
+  BKE_lightprobe_type_set(probe, type);
 
   DEG_relations_tag_update(CTX_data_main(C));
 
@@ -1030,7 +1011,7 @@ static int empty_drop_named_image_invoke(bContext *C, wmOperator *op, const wmEv
     return OPERATOR_CANCELLED;
   }
   /* handled below */
-  id_us_min((ID *)ima);
+  id_us_min(&ima->id);
 
   Object *ob = NULL;
   Object *ob_cursor = ED_view3d_give_object_under_cursor(C, event->mval);
@@ -1071,7 +1052,7 @@ void OBJECT_OT_drop_named_image(wmOperatorType *ot)
   PropertyRNA *prop;
 
   /* identifiers */
-  ot->name = "Add Empty Image/Drop Image To Empty";
+  ot->name = "Add Empty Image/Drop Image to Empty";
   ot->description = "Add an empty image type to scene with data";
   ot->idname = "OBJECT_OT_drop_named_image";
 
@@ -1714,7 +1695,11 @@ static bool dupliobject_cmp(const void *a_, const void *b_)
     return true;
   }
 
-  if (ELEM(a->type, b->type, OB_DUPLICOLLECTION)) {
+  if (a->type != b->type) {
+    return true;
+  }
+
+  if (a->type == OB_DUPLICOLLECTION) {
     for (int i = 1; (i < MAX_DUPLI_RECUR); i++) {
       if (a->persistent_id[i] != b->persistent_id[i]) {
         return true;
@@ -1798,6 +1783,9 @@ static void make_object_duplilist_real(bContext *C,
     BKE_collection_object_add_from(bmain, scene, base->object, ob_dst);
     base_dst = BKE_view_layer_base_find(view_layer, ob_dst);
     BLI_assert(base_dst != NULL);
+
+    ED_object_base_select(base_dst, BA_SELECT);
+    DEG_id_tag_update(&ob_dst->id, ID_RECALC_SELECT);
 
     BKE_scene_object_base_flag_sync_from_base(base_dst);
 
@@ -1933,6 +1921,9 @@ static void make_object_duplilist_real(bContext *C,
     }
     base->object->instance_collection = NULL;
   }
+
+  ED_object_base_select(base, BA_DESELECT);
+  DEG_id_tag_update(&base->object->id, ID_RECALC_SELECT);
 
   BLI_ghash_free(dupli_gh, NULL, NULL);
   if (parent_gh) {
@@ -2145,6 +2136,7 @@ static int convert_exec(bContext *C, wmOperator *op)
   const short target = RNA_enum_get(op->ptr, "target");
   bool keep_original = RNA_boolean_get(op->ptr, "keep_original");
   int a, mballConverted = 0;
+  bool gpencilConverted = false;
 
   /* don't forget multiple users! */
 
@@ -2333,7 +2325,7 @@ static int convert_exec(bContext *C, wmOperator *op)
 
       if (!keep_original) {
         /* other users */
-        if (cu->id.us > 1) {
+        if (ID_REAL_USERS(&cu->id) > 1) {
           for (ob1 = bmain->objects.first; ob1; ob1 = ob1->id.next) {
             if (ob1->data == ob->data) {
               ob1->type = OB_CURVE;
@@ -2385,20 +2377,20 @@ static int convert_exec(bContext *C, wmOperator *op)
       }
       else if (target == OB_GPENCIL) {
         if (ob->type != OB_CURVE) {
+          ob->flag &= ~OB_DONE;
           BKE_report(
               op->reports, RPT_ERROR, "Convert Surfaces to Grease Pencil is not supported.");
         }
         else {
-          /* Create a new grease pencil object only if it was not created before.
-           * All curves selected are converted as strokes of the same grease pencil object.
+          /* Create a new grease pencil object and copy transformations.
            * Nurbs Surface are not supported.
            */
-          if (gpencil_ob == NULL) {
-            const float *cur = scene->cursor.location;
-            ushort local_view_bits = (v3d && v3d->localvd) ? v3d->local_view_uuid : 0;
-            gpencil_ob = ED_gpencil_add_object(C, scene, cur, local_view_bits);
-          }
+          ushort local_view_bits = (v3d && v3d->localvd) ? v3d->local_view_uuid : 0;
+          gpencil_ob = ED_gpencil_add_object(C, scene, ob->loc, local_view_bits);
+          copy_v3_v3(gpencil_ob->rot, ob->rot);
+          copy_v3_v3(gpencil_ob->scale, ob->scale);
           BKE_gpencil_convert_curve(bmain, scene, gpencil_ob, ob, false, false, true);
+          gpencilConverted = true;
         }
       }
     }
@@ -2498,6 +2490,17 @@ static int convert_exec(bContext *C, wmOperator *op)
       }
       FOREACH_SCENE_OBJECT_END;
     }
+    /* Remove curves converted to Grease Pencil object. */
+    if (gpencilConverted) {
+      FOREACH_SCENE_OBJECT_BEGIN (scene, ob_curve) {
+        if (ob_curve->type == OB_CURVE) {
+          if (ob_curve->flag & OB_DONE) {
+            ED_object_base_free_and_unlink(bmain, scene, ob_curve);
+          }
+        }
+      }
+      FOREACH_SCENE_OBJECT_END;
+    }
   }
 
   // XXX  ED_object_editmode_enter(C, 0);
@@ -2576,7 +2579,7 @@ static Base *object_add_duplicate_internal(
     DEG_id_tag_update(&obn->id, ID_RECALC_TRANSFORM | ID_RECALC_GEOMETRY);
 
     base = BKE_view_layer_base_find(view_layer, ob);
-    if ((base != NULL) && (base->flag & BASE_VISIBLE)) {
+    if ((base != NULL) && (base->flag & BASE_VISIBLE_DEPSGRAPH)) {
       BKE_collection_object_add_from(bmain, scene, ob, obn);
     }
     else {
@@ -2713,7 +2716,7 @@ void OBJECT_OT_duplicate(wmOperatorType *ot)
 /* -------------------------------------------------------------------- */
 /** \name Add Named Object Operator
  *
- * Use for for drag & drop.
+ * Use for drag & drop.
  * \{ */
 
 static int add_named_exec(bContext *C, wmOperator *op)

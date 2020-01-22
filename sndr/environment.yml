@@ -8,9 +8,11 @@ channels:
   - defaults
   - ifcopenshell
   - freecad
+  - gsecars
 dependencies:
   - matplotlib
   - netcdf4
+  - pyside2
   - boost
   - ca-certificates
   - certifi
@@ -27,6 +29,6 @@ dependencies:
   - flake8
   - pylint
   - pycodestyle
-  - pip:
-    - PySide
-    - shiboken
+  - shiboken
+    #- pip:
+    #- shiboken

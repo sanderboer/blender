@@ -90,6 +90,7 @@ extern const EnumPropertyItem rna_enum_color_sets_items[];
 extern const EnumPropertyItem rna_enum_beztriple_keyframe_type_items[];
 extern const EnumPropertyItem rna_enum_beztriple_interpolation_mode_items[];
 extern const EnumPropertyItem rna_enum_beztriple_interpolation_easing_items[];
+extern const EnumPropertyItem rna_enum_fcurve_auto_smoothing_items[];
 extern const EnumPropertyItem rna_enum_keyframe_handle_type_items[];
 extern const EnumPropertyItem rna_enum_driver_target_rotation_mode_items[];
 
@@ -140,6 +141,8 @@ extern const EnumPropertyItem rna_enum_texture_type_items[];
 
 extern const EnumPropertyItem rna_enum_light_type_items[];
 
+extern const EnumPropertyItem rna_enum_lightprobes_type_items[];
+
 extern const EnumPropertyItem rna_enum_unpack_method_items[];
 
 extern const EnumPropertyItem rna_enum_object_type_items[];
@@ -184,8 +187,11 @@ extern const EnumPropertyItem rna_enum_file_sort_items[];
 extern const EnumPropertyItem rna_enum_node_socket_in_out_items[];
 
 extern const EnumPropertyItem rna_enum_node_math_items[];
+extern const EnumPropertyItem rna_enum_mapping_type_items[];
 extern const EnumPropertyItem rna_enum_node_vec_math_items[];
 extern const EnumPropertyItem rna_enum_node_filter_items[];
+extern const EnumPropertyItem rna_enum_node_map_range_items[];
+extern const EnumPropertyItem rna_enum_node_clamp_items[];
 
 extern const EnumPropertyItem rna_enum_ramp_blend_items[];
 
@@ -213,6 +219,9 @@ extern const EnumPropertyItem rna_enum_dt_layers_select_dst_items[];
 
 extern const EnumPropertyItem rna_enum_abc_compression_items[];
 extern const EnumPropertyItem rna_enum_context_mode_items[];
+
+extern const EnumPropertyItem rna_enum_curveprofile_preset_items[];
+extern const EnumPropertyItem rna_enum_preference_section_items[];
 
 /* API calls */
 int rna_node_tree_type_to_enum(struct bNodeTreeType *typeinfo);

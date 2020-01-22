@@ -53,6 +53,7 @@
 #include "ED_mesh.h"
 
 #include "transform.h"
+#include "transform_convert.h"
 
 typedef struct TransformModeItem {
   const char *idname;
@@ -301,11 +302,11 @@ static void TRANSFORM_OT_create_orientation(struct wmOperatorType *ot)
   WM_operatortype_props_advanced_begin(ot);
 
   RNA_def_boolean(
-      ot->srna, "use", false, "Use after creation", "Select orientation after its creation");
+      ot->srna, "use", false, "Use After Creation", "Select orientation after its creation");
   RNA_def_boolean(ot->srna,
                   "overwrite",
                   false,
-                  "Overwrite previous",
+                  "Overwrite Previous",
                   "Overwrite previously created orientation with same name");
 }
 
@@ -719,7 +720,7 @@ static void TRANSFORM_OT_translate(struct wmOperatorType *ot)
   ot->poll = ED_operator_screenactive;
   ot->poll_property = transform_poll_property;
 
-  RNA_def_float_vector_xyz(
+  RNA_def_float_translation(
       ot->srna, "value", 3, NULL, -FLT_MAX, FLT_MAX, "Move", "", -FLT_MAX, FLT_MAX);
 
   WM_operatortype_props_advanced_begin(ot);

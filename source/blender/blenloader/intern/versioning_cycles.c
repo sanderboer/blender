@@ -34,11 +34,15 @@
 #include "DNA_node_types.h"
 #include "DNA_particle_types.h"
 #include "DNA_camera_types.h"
+#include "DNA_anim_types.h"
 
 #include "BKE_colortools.h"
+#include "BKE_animsys.h"
 #include "BKE_idprop.h"
 #include "BKE_main.h"
 #include "BKE_node.h"
+
+#include "MEM_guardedalloc.h"
 
 #include "IMB_colormanagement.h"
 
@@ -217,7 +221,7 @@ static void square_roughness_node_insert(bNodeTree *ntree)
 static void mapping_node_order_flip(bNode *node)
 {
   /* Flip euler order of mapping shader node */
-  if (node->type == SH_NODE_MAPPING) {
+  if (node->type == SH_NODE_MAPPING && node->storage) {
     TexMapping *texmap = node->storage;
 
     float quat[4];
@@ -229,7 +233,7 @@ static void mapping_node_order_flip(bNode *node)
 static void vector_curve_node_remap(bNode *node)
 {
   /* Remap values of vector curve node from normalized to absolute values */
-  if (node->type == SH_NODE_CURVE_VEC) {
+  if (node->type == SH_NODE_CURVE_VEC && node->storage) {
     CurveMapping *mapping = node->storage;
     mapping->flag &= ~CUMA_DO_CLIP;
 
@@ -296,11 +300,11 @@ static void image_node_colorspace(bNode *node)
   }
 
   int color_space;
-  if (node->type == SH_NODE_TEX_IMAGE) {
+  if (node->type == SH_NODE_TEX_IMAGE && node->storage) {
     NodeTexImage *tex = node->storage;
     color_space = tex->color_space;
   }
-  else if (node->type == SH_NODE_TEX_ENVIRONMENT) {
+  else if (node->type == SH_NODE_TEX_ENVIRONMENT && node->storage) {
     NodeTexEnvironment *tex = node->storage;
     color_space = tex->color_space;
   }
@@ -756,6 +760,496 @@ static void update_vector_math_node_average_operator(bNodeTree *ntree)
   }
 }
 
+/* The Noise node now have a dimension property. This property should be
+ * initialized to 3 by default.
+ */
+static void update_noise_node_dimensions(bNodeTree *ntree)
+{
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_NOISE && node->storage) {
+      NodeTexNoise *tex = (NodeTexNoise *)node->storage;
+      tex->dimensions = 3;
+    }
+  }
+}
+
+/* This structure is only used to pass data to
+ * update_mapping_node_fcurve_rna_path_callback.
+ */
+typedef struct {
+  char *nodePath;
+  bNode *minimumNode;
+  bNode *maximumNode;
+} MappingNodeFCurveCallbackData;
+
+/* This callback function is used by update_mapping_node_inputs_and_properties.
+ * It is executed on every fcurve in the nodetree id updating its RNA paths. The
+ * paths needs to be updated because the node properties became inputs.
+ *
+ * nodes["Mapping"].translation --> nodes["Mapping"].inputs[1].default_value
+ * nodes["Mapping"].rotation --> nodes["Mapping"].inputs[2].default_value
+ * nodes["Mapping"].scale --> nodes["Mapping"].inputs[3].default_value
+ * nodes["Mapping"].max --> nodes["Maximum"].inputs[1].default_value
+ * nodes["Mapping"].min --> nodes["Minimum"].inputs[1].default_value
+ *
+ * The fcurve can be that of any node or property in the nodetree, so we only
+ * update if the rna path starts with the rna path of the mapping node and
+ * doesn't end with "default_value", that is, not the Vector input.
+ */
+static void update_mapping_node_fcurve_rna_path_callback(ID *UNUSED(id),
+                                                         FCurve *fcurve,
+                                                         void *_data)
+{
+  MappingNodeFCurveCallbackData *data = (MappingNodeFCurveCallbackData *)_data;
+  if (!STRPREFIX(fcurve->rna_path, data->nodePath) ||
+      BLI_str_endswith(fcurve->rna_path, "default_value")) {
+    return;
+  }
+  char *old_fcurve_rna_path = fcurve->rna_path;
+
+  if (BLI_str_endswith(old_fcurve_rna_path, "translation")) {
+    fcurve->rna_path = BLI_sprintfN("%s.%s", data->nodePath, "inputs[1].default_value");
+  }
+  else if (BLI_str_endswith(old_fcurve_rna_path, "rotation")) {
+    fcurve->rna_path = BLI_sprintfN("%s.%s", data->nodePath, "inputs[2].default_value");
+  }
+  else if (BLI_str_endswith(old_fcurve_rna_path, "scale")) {
+    fcurve->rna_path = BLI_sprintfN("%s.%s", data->nodePath, "inputs[3].default_value");
+  }
+  else if (data->minimumNode && BLI_str_endswith(old_fcurve_rna_path, "max")) {
+    fcurve->rna_path = BLI_sprintfN(
+        "nodes[\"%s\"].%s", data->minimumNode->name, "inputs[1].default_value");
+  }
+  else if (data->maximumNode && BLI_str_endswith(old_fcurve_rna_path, "min")) {
+    fcurve->rna_path = BLI_sprintfN(
+        "nodes[\"%s\"].%s", data->maximumNode->name, "inputs[1].default_value");
+  }
+
+  if (fcurve->rna_path != old_fcurve_rna_path) {
+    MEM_freeN(old_fcurve_rna_path);
+  }
+}
+
+/* The Mapping node has been rewritten to support dynamic inputs. Previously,
+ * the transformation information was stored in a TexMapping struct in the
+ * node->storage member of bNode. Currently, the transformation information
+ * is stored in input sockets. To correct this, we transfer the information
+ * from the TexMapping struct to the input sockets.
+ *
+ * Additionally, the Minimum and Maximum properties are no longer available
+ * in the node. To correct this, a Vector Minimum and/or a Vector Maximum
+ * nodes are added if needed.
+ *
+ * Finally, the TexMapping struct is freed and node->storage is set to NULL.
+ *
+ * Since the RNA paths of the properties changed, we also have to update the
+ * rna_path of the FCurves if they exist. To do that, we loop over FCurves
+ * and check if they control a property of the node, if they do, we update
+ * the path to be that of the corresponding socket in the node or the added
+ * minimum/maximum node.
+ *
+ */
+static void update_mapping_node_inputs_and_properties(bNodeTree *ntree)
+{
+  bool need_update = false;
+
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    /* If node->storage is NULL, then conversion has already taken place.
+     * This can happen if a file with the new mapping node [saved from (2, 81, 8) or newer]
+     * is opened in a blender version prior to (2, 81, 8) and saved from there again. */
+    if (node->type == SH_NODE_MAPPING && node->storage) {
+      TexMapping *mapping = (TexMapping *)node->storage;
+      node->custom1 = mapping->type;
+      node->width = 140.0f;
+
+      bNodeSocket *sockLocation = nodeFindSocket(node, SOCK_IN, "Location");
+      copy_v3_v3(cycles_node_socket_vector_value(sockLocation), mapping->loc);
+      bNodeSocket *sockRotation = nodeFindSocket(node, SOCK_IN, "Rotation");
+      copy_v3_v3(cycles_node_socket_vector_value(sockRotation), mapping->rot);
+      bNodeSocket *sockScale = nodeFindSocket(node, SOCK_IN, "Scale");
+      copy_v3_v3(cycles_node_socket_vector_value(sockScale), mapping->size);
+
+      bNode *maximumNode = NULL;
+      if (mapping->flag & TEXMAP_CLIP_MIN) {
+        maximumNode = nodeAddStaticNode(NULL, ntree, SH_NODE_VECTOR_MATH);
+        maximumNode->custom1 = NODE_VECTOR_MATH_MAXIMUM;
+        if (mapping->flag & TEXMAP_CLIP_MAX) {
+          maximumNode->locx = node->locx + (node->width + 20.0f) * 2.0f;
+        }
+        else {
+          maximumNode->locx = node->locx + node->width + 20.0f;
+        }
+        maximumNode->locy = node->locy;
+        bNodeSocket *sockMaximumB = BLI_findlink(&maximumNode->inputs, 1);
+        copy_v3_v3(cycles_node_socket_vector_value(sockMaximumB), mapping->min);
+        bNodeSocket *sockMappingResult = nodeFindSocket(node, SOCK_OUT, "Vector");
+
+        LISTBASE_FOREACH_BACKWARD_MUTABLE (bNodeLink *, link, &ntree->links) {
+          if (link->fromsock == sockMappingResult) {
+            bNodeSocket *sockMaximumResult = nodeFindSocket(maximumNode, SOCK_OUT, "Vector");
+            nodeAddLink(ntree, maximumNode, sockMaximumResult, link->tonode, link->tosock);
+            nodeRemLink(ntree, link);
+          }
+        }
+        if (!(mapping->flag & TEXMAP_CLIP_MAX)) {
+          bNodeSocket *sockMaximumA = BLI_findlink(&maximumNode->inputs, 0);
+          nodeAddLink(ntree, node, sockMappingResult, maximumNode, sockMaximumA);
+        }
+
+        need_update = true;
+      }
+
+      bNode *minimumNode = NULL;
+      if (mapping->flag & TEXMAP_CLIP_MAX) {
+        minimumNode = nodeAddStaticNode(NULL, ntree, SH_NODE_VECTOR_MATH);
+        minimumNode->custom1 = NODE_VECTOR_MATH_MINIMUM;
+        minimumNode->locx = node->locx + node->width + 20.0f;
+        minimumNode->locy = node->locy;
+        bNodeSocket *sockMinimumB = BLI_findlink(&minimumNode->inputs, 1);
+        copy_v3_v3(cycles_node_socket_vector_value(sockMinimumB), mapping->max);
+
+        bNodeSocket *sockMinimumResult = nodeFindSocket(minimumNode, SOCK_OUT, "Vector");
+        bNodeSocket *sockMappingResult = nodeFindSocket(node, SOCK_OUT, "Vector");
+
+        if (maximumNode) {
+          bNodeSocket *sockMaximumA = BLI_findlink(&maximumNode->inputs, 0);
+          nodeAddLink(ntree, minimumNode, sockMinimumResult, maximumNode, sockMaximumA);
+        }
+        else {
+          LISTBASE_FOREACH_BACKWARD_MUTABLE (bNodeLink *, link, &ntree->links) {
+            if (link->fromsock == sockMappingResult) {
+              nodeAddLink(ntree, minimumNode, sockMinimumResult, link->tonode, link->tosock);
+              nodeRemLink(ntree, link);
+            }
+          }
+        }
+        bNodeSocket *sockMinimumA = BLI_findlink(&minimumNode->inputs, 0);
+        nodeAddLink(ntree, node, sockMappingResult, minimumNode, sockMinimumA);
+
+        need_update = true;
+      }
+
+      MEM_freeN(node->storage);
+      node->storage = NULL;
+
+      char *nodePath = BLI_sprintfN("nodes[\"%s\"]", node->name);
+      MappingNodeFCurveCallbackData data = {nodePath, minimumNode, maximumNode};
+      BKE_fcurves_id_cb(&ntree->id, update_mapping_node_fcurve_rna_path_callback, &data);
+      MEM_freeN(nodePath);
+    }
+  }
+
+  if (need_update) {
+    ntreeUpdateTree(NULL, ntree);
+  }
+}
+
+/* The Musgrave node now has a dimension property. This property should
+ * be initialized to 3 by default.
+ */
+static void update_musgrave_node_dimensions(bNodeTree *ntree)
+{
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_MUSGRAVE && node->storage) {
+      NodeTexMusgrave *tex = (NodeTexMusgrave *)node->storage;
+      tex->dimensions = 3;
+    }
+  }
+}
+
+/* The Color output of the Musgrave node has been removed. Previously, this
+ * output was just equal to the Fac output. To correct this, we move links
+ * from the Color output to the Fac output if they exist.
+ */
+static void update_musgrave_node_color_output(bNodeTree *ntree)
+{
+  LISTBASE_FOREACH (bNodeLink *, link, &ntree->links) {
+    if (link->fromnode && link->fromnode->type == SH_NODE_TEX_MUSGRAVE) {
+      if (link->fromsock->type == SOCK_RGBA) {
+        link->fromsock = link->fromsock->next;
+      }
+    }
+  }
+}
+
+/* The Voronoi node now have a dimension property. This property should be
+ * initialized to 3 by default.
+ */
+static void update_voronoi_node_dimensions(bNodeTree *ntree)
+{
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_VORONOI && node->storage) {
+      NodeTexVoronoi *tex = (NodeTexVoronoi *)node->storage;
+      tex->dimensions = 3;
+    }
+  }
+}
+
+/* The F3 and F4 features of the Voronoi node have been removed.
+ * To correct this, we set the feature type to be F2 if it is F3
+ * or F4. The SHD_VORONOI_F3 and SHD_VORONOI_F4 enum values were
+ * 2 and 3 respectively.
+ */
+static void update_voronoi_node_f3_and_f4(bNodeTree *ntree)
+{
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_VORONOI && node->storage) {
+      NodeTexVoronoi *tex = (NodeTexVoronoi *)node->storage;
+      if (ELEM(tex->feature, 2, 3)) {
+        tex->feature = SHD_VORONOI_F2;
+      }
+    }
+  }
+}
+
+/* The Fac output of the Voronoi node has been removed. Previously, this
+ * output was the voronoi distance in the Intensity mode and the Cell ID
+ * in the Cell mode. To correct this, we update the identifier and name
+ * of the Fac socket such that it gets mapped to the Distance socket.
+ * This is supposed to work with update_voronoi_node_coloring.
+ */
+static void update_voronoi_node_fac_output(bNodeTree *ntree)
+{
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_VORONOI) {
+      bNodeSocket *facOutput = BLI_findlink(&node->outputs, 1);
+      strcpy(facOutput->identifier, "Distance");
+      strcpy(facOutput->name, "Distance");
+    }
+  }
+}
+
+/* The Crackle feature of the Voronoi node has been removed. Previously,
+ * this feature returned the F2 distance minus the F1 distance. The
+ * crackle feature had an enum value of 4. To fix this we do the
+ * following:
+ *
+ * 1. The node feature is set to F1.
+ * 2. A new Voronoi node is added and its feature is set to F2.
+ * 3. The properties, input values, and connections are copied
+ *    from the node to the new Voronoi node so that they match
+ *    exactly.
+ * 4. A Subtract node is added.
+ * 5. The outputs of the F1 and F2 voronoi are connected to
+ *    the inputs of the subtract node.
+ * 6. The output of the subtract node is connected to the
+ *    appropriate sockets.
+ *
+ */
+static void update_voronoi_node_crackle(bNodeTree *ntree)
+{
+  bool need_update = false;
+
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_VORONOI && node->storage) {
+      NodeTexVoronoi *tex = (NodeTexVoronoi *)node->storage;
+      bNodeSocket *sockDistance = nodeFindSocket(node, SOCK_OUT, "Distance");
+      bNodeSocket *sockColor = nodeFindSocket(node, SOCK_OUT, "Color");
+      if (tex->feature == 4 && (socket_is_used(sockDistance) || socket_is_used(sockColor))) {
+        tex->feature = SHD_VORONOI_F1;
+
+        bNode *voronoiNode = nodeAddStaticNode(NULL, ntree, SH_NODE_TEX_VORONOI);
+        NodeTexVoronoi *texVoronoi = (NodeTexVoronoi *)voronoiNode->storage;
+        texVoronoi->feature = SHD_VORONOI_F2;
+        texVoronoi->distance = tex->distance;
+        texVoronoi->dimensions = 3;
+        voronoiNode->locx = node->locx + node->width + 20.0f;
+        voronoiNode->locy = node->locy;
+
+        bNodeSocket *sockVector = nodeFindSocket(node, SOCK_IN, "Vector");
+        bNodeSocket *sockScale = nodeFindSocket(node, SOCK_IN, "Scale");
+        bNodeSocket *sockExponent = nodeFindSocket(node, SOCK_IN, "Exponent");
+        bNodeSocket *sockVoronoiVector = nodeFindSocket(voronoiNode, SOCK_IN, "Vector");
+        bNodeSocket *sockVoronoiScale = nodeFindSocket(voronoiNode, SOCK_IN, "Scale");
+        bNodeSocket *sockVoronoiExponent = nodeFindSocket(voronoiNode, SOCK_IN, "Exponent");
+        if (sockVector->link) {
+          nodeAddLink(ntree,
+                      sockVector->link->fromnode,
+                      sockVector->link->fromsock,
+                      voronoiNode,
+                      sockVoronoiVector);
+        }
+        *cycles_node_socket_float_value(sockVoronoiScale) = *cycles_node_socket_float_value(
+            sockScale);
+        if (sockScale->link) {
+          nodeAddLink(ntree,
+                      sockScale->link->fromnode,
+                      sockScale->link->fromsock,
+                      voronoiNode,
+                      sockVoronoiScale);
+        }
+        *cycles_node_socket_float_value(sockVoronoiExponent) = *cycles_node_socket_float_value(
+            sockExponent);
+        if (sockExponent->link) {
+          nodeAddLink(ntree,
+                      sockExponent->link->fromnode,
+                      sockExponent->link->fromsock,
+                      voronoiNode,
+                      sockVoronoiExponent);
+        }
+
+        bNode *subtractNode = nodeAddStaticNode(NULL, ntree, SH_NODE_MATH);
+        subtractNode->custom1 = NODE_MATH_SUBTRACT;
+        subtractNode->locx = voronoiNode->locx + voronoiNode->width + 20.0f;
+        subtractNode->locy = voronoiNode->locy;
+        bNodeSocket *sockSubtractOutValue = nodeFindSocket(subtractNode, SOCK_OUT, "Value");
+
+        LISTBASE_FOREACH_BACKWARD_MUTABLE (bNodeLink *, link, &ntree->links) {
+          if (link->fromnode == node) {
+            nodeAddLink(ntree, subtractNode, sockSubtractOutValue, link->tonode, link->tosock);
+            nodeRemLink(ntree, link);
+          }
+        }
+
+        bNodeSocket *sockDistanceF1 = nodeFindSocket(node, SOCK_OUT, "Distance");
+        bNodeSocket *sockDistanceF2 = nodeFindSocket(voronoiNode, SOCK_OUT, "Distance");
+        bNodeSocket *sockSubtractA = BLI_findlink(&subtractNode->inputs, 0);
+        bNodeSocket *sockSubtractB = BLI_findlink(&subtractNode->inputs, 1);
+
+        nodeAddLink(ntree, node, sockDistanceF1, subtractNode, sockSubtractB);
+        nodeAddLink(ntree, voronoiNode, sockDistanceF2, subtractNode, sockSubtractA);
+
+        need_update = true;
+      }
+    }
+  }
+
+  if (need_update) {
+    ntreeUpdateTree(NULL, ntree);
+  }
+}
+
+/**
+ * The coloring property of the Voronoi node was removed. Previously,
+ * if the coloring enum was set to Intensity (0), the voronoi distance
+ * was returned in all outputs, otherwise, the Cell ID was returned.
+ * Since we remapped the Fac output in update_voronoi_node_fac_output,
+ * then to fix this, we relink the Color output to the Distance
+ * output if coloring was set to 0, and the other way around otherwise.
+ */
+static void update_voronoi_node_coloring(bNodeTree *ntree)
+{
+  bool need_update = false;
+
+  LISTBASE_FOREACH_BACKWARD_MUTABLE (bNodeLink *, link, &ntree->links) {
+    bNode *node = link->fromnode;
+    if (node && node->type == SH_NODE_TEX_VORONOI && node->storage) {
+      NodeTexVoronoi *tex = (NodeTexVoronoi *)node->storage;
+      if (tex->coloring == 0) {
+        bNodeSocket *sockColor = nodeFindSocket(node, SOCK_OUT, "Color");
+        if (link->fromsock == sockColor) {
+          bNodeSocket *sockDistance = nodeFindSocket(node, SOCK_OUT, "Distance");
+          nodeAddLink(ntree, node, sockDistance, link->tonode, link->tosock);
+          nodeRemLink(ntree, link);
+          need_update = true;
+        }
+      }
+      else {
+        bNodeSocket *sockDistance = nodeFindSocket(node, SOCK_OUT, "Distance");
+        if (link->fromsock == sockDistance) {
+          bNodeSocket *sockColor = nodeFindSocket(node, SOCK_OUT, "Color");
+          nodeAddLink(ntree, node, sockColor, link->tonode, link->tosock);
+          nodeRemLink(ntree, link);
+          need_update = true;
+        }
+      }
+    }
+  }
+
+  if (need_update) {
+    ntreeUpdateTree(NULL, ntree);
+  }
+}
+
+/* Previously, the output euclidean distance was actually the squared
+ * euclidean distance. To fix this, we square the output distance
+ * socket if the distance metric is set to SHD_VORONOI_EUCLIDEAN.
+ */
+static void update_voronoi_node_square_distance(bNodeTree *ntree)
+{
+  bool need_update = false;
+
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_VORONOI && node->storage) {
+      NodeTexVoronoi *tex = (NodeTexVoronoi *)node->storage;
+      bNodeSocket *sockDistance = nodeFindSocket(node, SOCK_OUT, "Distance");
+      if (tex->distance == SHD_VORONOI_EUCLIDEAN &&
+          (tex->feature == SHD_VORONOI_F1 || tex->feature == SHD_VORONOI_F2) &&
+          socket_is_used(sockDistance)) {
+        bNode *multiplyNode = nodeAddStaticNode(NULL, ntree, SH_NODE_MATH);
+        multiplyNode->custom1 = NODE_MATH_MULTIPLY;
+        multiplyNode->locx = node->locx + node->width + 20.0f;
+        multiplyNode->locy = node->locy;
+
+        bNodeSocket *sockValue = nodeFindSocket(multiplyNode, SOCK_OUT, "Value");
+        LISTBASE_FOREACH_BACKWARD_MUTABLE (bNodeLink *, link, &ntree->links) {
+          if (link->fromsock == sockDistance) {
+            nodeAddLink(ntree, multiplyNode, sockValue, link->tonode, link->tosock);
+            nodeRemLink(ntree, link);
+          }
+        }
+
+        bNodeSocket *sockMultiplyA = BLI_findlink(&multiplyNode->inputs, 0);
+        bNodeSocket *sockMultiplyB = BLI_findlink(&multiplyNode->inputs, 1);
+
+        nodeAddLink(ntree, node, sockDistance, multiplyNode, sockMultiplyA);
+        nodeAddLink(ntree, node, sockDistance, multiplyNode, sockMultiplyB);
+
+        need_update = true;
+      }
+    }
+  }
+
+  if (need_update) {
+    ntreeUpdateTree(NULL, ntree);
+  }
+}
+
+/* Noise and Wave Texture nodes: Restore previous Distortion range.
+ * In 2.81 we used noise() for distortion, now we use snoise() which has twice the range.
+ * To fix this we halve distortion value, directly or by adding multiply node for used sockets.
+ */
+static void update_noise_and_wave_distortion(bNodeTree *ntree)
+{
+  bool need_update = false;
+
+  for (bNode *node = ntree->nodes.first; node; node = node->next) {
+    if (node->type == SH_NODE_TEX_NOISE || node->type == SH_NODE_TEX_WAVE) {
+
+      bNodeSocket *sockDistortion = nodeFindSocket(node, SOCK_IN, "Distortion");
+      float *distortion = cycles_node_socket_float_value(sockDistortion);
+
+      if (socket_is_used(sockDistortion) && sockDistortion->link != NULL) {
+        bNode *distortionInputNode = sockDistortion->link->fromnode;
+        bNodeSocket *distortionInputSock = sockDistortion->link->fromsock;
+
+        bNode *mulNode = nodeAddStaticNode(NULL, ntree, SH_NODE_MATH);
+        mulNode->custom1 = NODE_MATH_MULTIPLY;
+        mulNode->locx = node->locx;
+        mulNode->locy = node->locy - 240.0f;
+        mulNode->flag |= NODE_HIDDEN;
+        bNodeSocket *mulSockA = BLI_findlink(&mulNode->inputs, 0);
+        bNodeSocket *mulSockB = BLI_findlink(&mulNode->inputs, 1);
+        *cycles_node_socket_float_value(mulSockB) = 0.5f;
+        bNodeSocket *mulSockOut = nodeFindSocket(mulNode, SOCK_OUT, "Value");
+
+        nodeRemLink(ntree, sockDistortion->link);
+        nodeAddLink(ntree, distortionInputNode, distortionInputSock, mulNode, mulSockA);
+        nodeAddLink(ntree, mulNode, mulSockOut, node, sockDistortion);
+
+        need_update = true;
+      }
+      else if (*distortion != 0.0f) {
+        *distortion = *distortion * 0.5f;
+      }
+    }
+  }
+
+  if (need_update) {
+    ntreeUpdateTree(NULL, ntree);
+  }
+}
+
 void blo_do_versions_cycles(FileData *UNUSED(fd), Library *UNUSED(lib), Main *bmain)
 {
   /* Particle shape shared with Eevee. */
@@ -793,6 +1287,25 @@ void blo_do_versions_cycles(FileData *UNUSED(fd), Library *UNUSED(lib), Main *bm
     FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
       if (ntree->type == NTREE_SHADER) {
         update_vector_math_node_operators_enum_mapping(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 10)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_musgrave_node_color_output(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 11)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_voronoi_node_f3_and_f4(ntree);
+        update_voronoi_node_fac_output(ntree);
       }
     }
     FOREACH_NODETREE_END;
@@ -924,6 +1437,54 @@ void do_versions_after_linking_cycles(Main *bmain)
         update_vector_math_node_cross_product_operator(ntree);
         update_vector_math_node_normalize_operator(ntree);
         update_vector_math_node_average_operator(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 7)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_noise_node_dimensions(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 8)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_mapping_node_inputs_and_properties(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 10)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_musgrave_node_dimensions(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 281, 11)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_voronoi_node_dimensions(ntree);
+        update_voronoi_node_crackle(ntree);
+        update_voronoi_node_coloring(ntree);
+        update_voronoi_node_square_distance(ntree);
+      }
+    }
+    FOREACH_NODETREE_END;
+  }
+
+  if (!MAIN_VERSION_ATLEAST(bmain, 282, 4)) {
+    FOREACH_NODETREE_BEGIN (bmain, ntree, id) {
+      if (ntree->type == NTREE_SHADER) {
+        update_noise_and_wave_distortion(ntree);
       }
     }
     FOREACH_NODETREE_END;

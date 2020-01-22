@@ -231,13 +231,15 @@ def draw(layout, context, context_member, property_type, use_edit=True):
 
     if rna_item.id_data.library is not None:
         use_edit = False
+    is_lib_override = rna_item.id_data.override_library and rna_item.id_data.override_library.reference
 
     assert(isinstance(rna_item, property_type))
 
     items = rna_item.items()
     items.sort()
 
-    if use_edit:
+    # TODO: Allow/support adding new custom props to overrides.
+    if use_edit and not is_lib_override:
         row = layout.row()
         props = row.operator("wm.properties_add", text="Add")
         props.data_path = context_member
@@ -275,14 +277,15 @@ def draw(layout, context, context_member, property_type, use_edit=True):
         else:
             val_draw = val
 
-        row = flow.row(align=True)
+        row = layout.row(align=True)
         box = row.box()
 
         if use_edit:
             split = box.split(factor=0.75)
             row = split.row(align=True)
         else:
-            row = box.row(align=True)
+            split = box.split(factor=1.00)
+            row = split.row(align=True)
 
         row.alignment = 'RIGHT'
 
@@ -303,6 +306,9 @@ def draw(layout, context, context_member, property_type, use_edit=True):
 
         if use_edit:
             row = split.row(align=True)
+            # Do not allow editing of overridden properties (we cannot use a poll function of the operators here
+            # since they's have no access to the specific property...).
+            row.enabled = not(is_lib_override and key in rna_item.id_data.override_library.reference)
             if not is_rna:
                 props = row.operator("wm.properties_edit", text="Edit")
                 assign_props(props, val_draw, key)

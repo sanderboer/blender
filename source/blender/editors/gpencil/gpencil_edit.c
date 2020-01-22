@@ -237,11 +237,38 @@ static int gpencil_selectmode_toggle_exec(bContext *C, wmOperator *op)
 {
   Scene *scene = CTX_data_scene(C);
   ToolSettings *ts = CTX_data_tool_settings(C);
+  Object *ob = CTX_data_active_object(C);
   const int mode = RNA_int_get(op->ptr, "mode");
+  bool changed = false;
+
+  if (ts->gpencil_selectmode_edit == mode) {
+    return OPERATOR_FINISHED;
+  }
 
   /* Just set mode */
   ts->gpencil_selectmode_edit = mode;
 
+  /* If the mode is Stroke, extend selection. */
+  if ((ob) && (ts->gpencil_selectmode_edit == GP_SELECTMODE_STROKE)) {
+    bGPdata *gpd = (bGPdata *)ob->data;
+    /* Extend selection to all points in all selected strokes. */
+    CTX_DATA_BEGIN (C, bGPDstroke *, gps, editable_gpencil_strokes) {
+      if ((gps->flag & GP_STROKE_SELECT) && (gps->totpoints > 1)) {
+        changed = true;
+        bGPDspoint *pt;
+        for (int i = 0; i < gps->totpoints; i++) {
+          pt = &gps->points[i];
+          pt->flag |= GP_SPOINT_SELECT;
+        }
+      }
+    }
+    CTX_DATA_END;
+    if (changed) {
+      DEG_id_tag_update(&gpd->id, ID_RECALC_TRANSFORM | ID_RECALC_GEOMETRY);
+    }
+  }
+
+  WM_event_add_notifier(C, NC_GPENCIL | NA_SELECTED, NULL);
   WM_main_add_notifier(NC_SCENE | ND_TOOLSETTINGS, NULL);
   DEG_id_tag_update(&scene->id, ID_RECALC_COPY_ON_WRITE);
 
@@ -328,7 +355,7 @@ static int gpencil_paintmode_toggle_exec(bContext *C, wmOperator *op)
     Paint *paint = &ts->gp_paint->paint;
     /* if not exist, create a new one */
     if ((paint->brush == NULL) || (paint->brush->gpencil_settings == NULL)) {
-      BKE_brush_gpencil_presets(C);
+      BKE_brush_gpencil_presets(bmain, ts);
     }
     BKE_paint_toolslots_brush_validate(bmain, &ts->gp_paint->paint);
   }
@@ -743,6 +770,11 @@ static int gp_duplicate_exec(bContext *C, wmOperator *op)
         /* deselect original stroke, or else the originals get moved too
          * (when using the copy + move macro)
          */
+        bGPDspoint *pt;
+        int i;
+        for (i = 0, pt = gps->points; i < gps->totpoints; i++, pt++) {
+          pt->flag &= ~GP_SPOINT_SELECT;
+        }
         gps->flag &= ~GP_STROKE_SELECT;
       }
     }
@@ -1511,6 +1543,7 @@ void GPENCIL_OT_move_to_layer(wmOperatorType *ot)
 
   /* GPencil layer to use. */
   ot->prop = RNA_def_int(ot->srna, "layer", 0, 0, INT_MAX, "Grease Pencil Layer", "", 0, INT_MAX);
+  RNA_def_property_flag(ot->prop, PROP_HIDDEN | PROP_SKIP_SAVE);
 }
 
 /* ********************* Add Blank Frame *************************** */
@@ -1582,6 +1615,8 @@ static int gp_blank_frame_add_exec(bContext *C, wmOperator *op)
 
 void GPENCIL_OT_blank_frame_add(wmOperatorType *ot)
 {
+  PropertyRNA *prop;
+
   /* identifiers */
   ot->name = "Insert Blank Frame";
   ot->idname = "GPENCIL_OT_blank_frame_add";
@@ -1593,13 +1628,15 @@ void GPENCIL_OT_blank_frame_add(wmOperatorType *ot)
   ot->exec = gp_blank_frame_add_exec;
   ot->poll = gp_add_poll;
 
-  /* properties */
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
-  RNA_def_boolean(ot->srna,
-                  "all_layers",
-                  false,
-                  "All Layers",
-                  "Create blank frame in all layers, not only active");
+
+  /* properties */
+  prop = RNA_def_boolean(ot->srna,
+                         "all_layers",
+                         false,
+                         "All Layers",
+                         "Create blank frame in all layers, not only active");
+  RNA_def_property_flag(prop, PROP_SKIP_SAVE);
 }
 
 /* ******************* Delete Active Frame ************************ */
@@ -1613,10 +1650,23 @@ static bool gp_actframe_delete_poll(bContext *C)
   return (gpl && gpl->actframe);
 }
 
+static bool gp_annotation_actframe_delete_poll(bContext *C)
+{
+  bGPdata *gpd = ED_annotation_data_get_active(C);
+  bGPDlayer *gpl = BKE_gpencil_layer_getactive(gpd);
+
+  /* only if there's an active layer with an active frame */
+  return (gpl && gpl->actframe);
+}
+
 /* delete active frame - wrapper around API calls */
 static int gp_actframe_delete_exec(bContext *C, wmOperator *op)
 {
-  bGPdata *gpd = ED_gpencil_data_get_active(C);
+  const bool is_annotation = STREQ(op->idname, "GPENCIL_OT_annotation_active_frame_delete");
+
+  bGPdata *gpd = (!is_annotation) ? ED_gpencil_data_get_active(C) :
+                                    ED_annotation_data_get_active(C);
+
   bGPDlayer *gpl = BKE_gpencil_layer_getactive(gpd);
 
   Scene *scene = CTX_data_scene(C);
@@ -1657,6 +1707,19 @@ void GPENCIL_OT_active_frame_delete(wmOperatorType *ot)
   ot->poll = gp_actframe_delete_poll;
 }
 
+void GPENCIL_OT_annotation_active_frame_delete(wmOperatorType *ot)
+{
+  /* identifiers */
+  ot->name = "Delete Active Frame";
+  ot->idname = "GPENCIL_OT_annotation_active_frame_delete";
+  ot->description = "Delete the active frame for the active Annotation Layer";
+
+  ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+
+  /* callbacks */
+  ot->exec = gp_actframe_delete_exec;
+  ot->poll = gp_annotation_actframe_delete_poll;
+}
 /* **************** Delete All Active Frames ****************** */
 
 static bool gp_actframe_delete_all_poll(bContext *C)
@@ -3021,7 +3084,7 @@ static void gpencil_flip_stroke(bGPDstroke *gps)
 static void gpencil_stroke_copy_point(bGPDstroke *gps,
                                       bGPDspoint *point,
                                       int idx,
-                                      float delta[3],
+                                      const float delta[3],
                                       float pressure,
                                       float strength,
                                       float deltatime)
@@ -4489,6 +4552,10 @@ static int gpencil_cutter_lasso_select(bContext *C,
   /* dissolve selected points */
   bGPDstroke *gpsn;
   for (bGPDlayer *gpl = gpd->layers.first; gpl; gpl = gpl->next) {
+    if (gpl->flag & GP_LAYER_LOCKED) {
+      continue;
+    }
+
     bGPDframe *gpf = gpl->actframe;
     if (gpf == NULL) {
       continue;

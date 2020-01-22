@@ -29,6 +29,9 @@ struct FileSelectParams;
 struct ScrArea;
 struct SpaceFile;
 struct bContext;
+struct bScreen;
+struct uiBlock;
+struct wmWindow;
 struct wmWindowManager;
 
 #define FILE_LAYOUT_HOR 1
@@ -90,12 +93,16 @@ typedef struct FileSelection {
   int last;
 } FileSelection;
 
-struct rcti;
 struct View2D;
+struct rcti;
 
 struct FileSelectParams *ED_fileselect_get_params(struct SpaceFile *sfile);
 
 short ED_fileselect_set_params(struct SpaceFile *sfile);
+void ED_fileselect_set_params_from_userdef(struct SpaceFile *sfile);
+void ED_fileselect_params_to_userdef(struct SpaceFile *sfile,
+                                     int temp_win_size[],
+                                     const bool is_maximized);
 
 void ED_fileselect_reset_params(struct SpaceFile *sfile);
 
@@ -126,12 +133,21 @@ void ED_fileselect_clear(struct wmWindowManager *wm, struct ScrArea *sa, struct 
 
 void ED_fileselect_exit(struct wmWindowManager *wm, struct ScrArea *sa, struct SpaceFile *sfile);
 
+void ED_fileselect_window_params_get(const struct wmWindow *win,
+                                     int win_size[2],
+                                     bool *is_maximized);
+
 int ED_path_extension_type(const char *path);
 int ED_file_extension_icon(const char *path);
 
 void ED_file_read_bookmarks(void);
 
 void ED_file_change_dir(struct bContext *C);
+
+void ED_file_path_button(struct bScreen *screen,
+                         const struct SpaceFile *sfile,
+                         struct FileSelectParams *params,
+                         struct uiBlock *block);
 
 /* File menu stuff */
 
@@ -143,7 +159,7 @@ typedef struct FSMenuEntry {
   char name[256]; /* FILE_MAXFILE */
   short save;
   short valid;
-  short pad[2];
+  int icon;
 } FSMenuEntry;
 
 typedef enum FSMenuCategory {
@@ -180,5 +196,8 @@ void ED_fsmenu_entry_set_path(struct FSMenuEntry *fsentry, const char *path);
 
 char *ED_fsmenu_entry_get_name(struct FSMenuEntry *fsentry);
 void ED_fsmenu_entry_set_name(struct FSMenuEntry *fsentry, const char *name);
+
+int ED_fsmenu_entry_get_icon(struct FSMenuEntry *fsentry);
+void ED_fsmenu_entry_set_icon(struct FSMenuEntry *fsentry, const int icon);
 
 #endif /* __ED_FILESELECT_H__ */

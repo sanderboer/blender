@@ -78,14 +78,6 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
       {FILE_IMGDISPLAY, "THUMBNAIL", ICON_IMGDISPLAY, "Thumbnails", "Display files as thumbnails"},
       {0, NULL, 0, NULL, NULL},
   };
-  static const EnumPropertyItem file_action_types[] = {
-      {FILE_OPENFILE,
-       "OPENFILE",
-       0,
-       "Open",
-       "Use the file browser for opening files or a directory"},
-      {FILE_SAVE, "SAVE", 0, "Save", "Use the file browser for saving a file"},
-  };
 
   if (flag & WM_FILESEL_FILEPATH) {
     RNA_def_string_file_path(ot->srna, "filepath", NULL, FILE_MAX, "File Path", "Path to file");
@@ -155,6 +147,9 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
       ot->srna, "filter_text", (filter & FILE_TYPE_TEXT) != 0, "Filter text files", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
+      ot->srna, "filter_archive", (filter & FILE_TYPE_ARCHIVE) != 0, "Filter archive files", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+  prop = RNA_def_boolean(
       ot->srna, "filter_btx", (filter & FILE_TYPE_BTX) != 0, "Filter btx files", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
@@ -162,6 +157,8 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
       ot->srna, "filter_alembic", (filter & FILE_TYPE_ALEMBIC) != 0, "Filter Alembic files", "");
+  prop = RNA_def_boolean(
+      ot->srna, "filter_usd", (filter & FILE_TYPE_USD) != 0, "Filter USD files", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
       ot->srna, "filter_folder", (filter & FILE_TYPE_FOLDER) != 0, "Filter folders", "");
@@ -202,9 +199,6 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
 
   prop = RNA_def_enum(
       ot->srna, "sort_method", rna_enum_file_sort_items, sort, "File sorting mode", "");
-  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
-
-  prop = RNA_def_enum(ot->srna, "action_type", file_action_types, action, "Action Type", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
 }
 
@@ -404,6 +398,46 @@ void WM_operator_properties_select_operation_simple(wmOperatorType *ot)
   RNA_def_property_flag(prop, PROP_SKIP_SAVE);
 }
 
+/**
+ * Selecting and tweaking items are overlapping operations. Getting both to work without conflicts
+ * requires special care. See
+ * https://wiki.blender.org/wiki/Human_Interface_Guidelines/Selection#Select-tweaking for the
+ * desired behavior.
+ *
+ * For default click selection (with no modifier keys held), the select operators can do the
+ * following:
+ * - On a mouse press on an unselected item, change selection and finish immediately after.
+ *   This sends an undo push and allows transform to take over should a tweak event be caught now.
+ * - On a mouse press on a selected item, don't change selection state, but start modal execution
+ *   of the operator. Idea is that we wait with deselecting other items until we know that the
+ *   intention wasn't to tweak (mouse press+drag) all selected items.
+ * - If a tweak is recognized before the release event happens, cancel the operator, so that
+ *   transform can take over and no undo-push is sent.
+ * - If the release event occurs rather than a tweak one, deselect all items but the one under the
+ *   cursor, and finish the modal operator.
+ *
+ * This utility, together with #WM_generic_select_invoke() and #WM_generic_select_modal() should
+ * help getting the wanted behavior to work. Most generic logic should be handled in these, so that
+ * the select operators only have to care for the case dependent handling.
+ *
+ * Every select operator has slightly different requirements, e.g. VSE strip selection also needs
+ * to account for handle selection. This should be the baseline behavior though.
+ */
+void WM_operator_properties_generic_select(wmOperatorType *ot)
+{
+  /* On the initial mouse press, this is set by #WM_generic_select_modal() to let the select
+   * operator exec callback know that it should not __yet__ deselect other items when clicking on
+   * an already selected one. Instead should make sure the operator executes modal then (see
+   * #WM_generic_select_modal()), so that the exec callback can be called a second time on the
+   * mouse release event to do this part. */
+  PropertyRNA *prop = RNA_def_boolean(
+      ot->srna, "wait_to_deselect_others", false, "Wait to Deselect Others", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+
+  RNA_def_int(ot->srna, "mouse_x", 0, INT_MIN, INT_MAX, "Mouse X", "", INT_MIN, INT_MAX);
+  RNA_def_int(ot->srna, "mouse_y", 0, INT_MIN, INT_MAX, "Mouse Y", "", INT_MIN, INT_MAX);
+}
+
 void WM_operator_properties_gesture_box_zoom(wmOperatorType *ot)
 {
   WM_operator_properties_border(ot);
@@ -499,19 +533,26 @@ void WM_operator_properties_mouse_select(wmOperatorType *ot)
  */
 void WM_operator_properties_checker_interval(wmOperatorType *ot, bool nth_can_disable)
 {
-  const int nth_default = nth_can_disable ? 1 : 2;
-  const int nth_min = min_ii(nth_default, 2);
+  const int nth_default = nth_can_disable ? 0 : 1;
+  const int nth_min = min_ii(nth_default, 1);
   RNA_def_int(ot->srna,
-              "nth",
+              "skip",
               nth_default,
               nth_min,
               INT_MAX,
-              "Nth Element",
-              "Skip every Nth element",
+              "Deselected",
+              "Number of deselected elements in the repetitive sequence",
               nth_min,
               100);
-  RNA_def_int(
-      ot->srna, "skip", 1, 1, INT_MAX, "Skip", "Number of elements to skip at once", 1, 100);
+  RNA_def_int(ot->srna,
+              "nth",
+              1,
+              1,
+              INT_MAX,
+              "Selected",
+              "Number of selected elements in the repetitive sequence",
+              1,
+              100);
   RNA_def_int(ot->srna,
               "offset",
               0,
@@ -526,7 +567,7 @@ void WM_operator_properties_checker_interval(wmOperatorType *ot, bool nth_can_di
 void WM_operator_properties_checker_interval_from_op(struct wmOperator *op,
                                                      struct CheckerIntervalParams *op_params)
 {
-  const int nth = RNA_int_get(op->ptr, "nth") - 1;
+  const int nth = RNA_int_get(op->ptr, "nth");
   const int skip = RNA_int_get(op->ptr, "skip");
   int offset = RNA_int_get(op->ptr, "offset");
 
@@ -540,6 +581,6 @@ void WM_operator_properties_checker_interval_from_op(struct wmOperator *op,
 bool WM_operator_properties_checker_interval_test(const struct CheckerIntervalParams *op_params,
                                                   int depth)
 {
-  return ((op_params->nth == 0) ||
+  return ((op_params->skip == 0) ||
           ((op_params->offset + depth) % (op_params->skip + op_params->nth) >= op_params->skip));
 }

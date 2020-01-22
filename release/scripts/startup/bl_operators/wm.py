@@ -1103,7 +1103,7 @@ class WM_OT_doc_view(Operator):
     bl_label = "View Documentation"
 
     doc_id: doc_id
-    if bpy.app.version_cycle in {"release", "rc"}:
+    if bpy.app.version_cycle in {"release", "rc", "beta"}:
         _prefix = ("https://docs.blender.org/api/%d.%d%s" %
                    (bpy.app.version[0], bpy.app.version[1], bpy.app.version_char))
     else:
@@ -1645,6 +1645,12 @@ class WM_OT_tool_set_by_id(Operator):
         default=False,
         options={'SKIP_SAVE'},
     )
+    as_fallback: BoolProperty(
+        name="Set Fallback",
+        description="Set the fallback tool instead of the primary tool",
+        default=False,
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
 
     space_type: rna_space_type_prop
 
@@ -1672,7 +1678,10 @@ class WM_OT_tool_set_by_id(Operator):
             space_type = context.space_data.type
 
         fn = activate_by_id_or_cycle if self.cycle else activate_by_id
-        if fn(context, space_type, self.name):
+        if fn(context, space_type, self.name, as_fallback=self.as_fallback):
+            if self.as_fallback:
+                tool_settings = context.tool_settings
+                tool_settings.workspace_tool_type = 'FALLBACK'
             return {'FINISHED'}
         else:
             self.report({'WARNING'}, f"Tool {self.name!r:s} not found for space {space_type!r:s}.")
@@ -1699,13 +1708,20 @@ class WM_OT_tool_set_by_index(Operator):
         default=True,
     )
 
+    as_fallback: BoolProperty(
+        name="Set Fallback",
+        description="Set the fallback tool instead of the primary",
+        default=False,
+        options={'SKIP_SAVE', 'HIDDEN'},
+    )
+
     space_type: rna_space_type_prop
 
     def execute(self, context):
         from bl_ui.space_toolsystem_common import (
             activate_by_id,
             activate_by_id_or_cycle,
-            item_from_index,
+            item_from_index_active,
             item_from_flat_index,
         )
 
@@ -1714,7 +1730,7 @@ class WM_OT_tool_set_by_index(Operator):
         else:
             space_type = context.space_data.type
 
-        fn = item_from_flat_index if self.expand else item_from_index
+        fn = item_from_flat_index if self.expand else item_from_index_active
         item = fn(context, space_type, self.index)
         if item is None:
             # Don't report, since the number of tools may change.
@@ -1722,7 +1738,10 @@ class WM_OT_tool_set_by_index(Operator):
 
         # Same as: WM_OT_tool_set_by_id
         fn = activate_by_id_or_cycle if self.cycle else activate_by_id
-        if fn(context, space_type, item.idname):
+        if fn(context, space_type, item.idname, as_fallback=self.as_fallback):
+            if self.as_fallback:
+                tool_settings = context.tool_settings
+                tool_settings.workspace_tool_type = 'FALLBACK'
             return {'FINISHED'}
         else:
             # Since we already have the tool, this can't happen.
@@ -1744,25 +1763,190 @@ class WM_OT_toolbar(Operator):
             WM_OT_toolbar._key_held = event.type
             return self.execute(context)
 
-    def execute(self, context):
+    @staticmethod
+    def keymap_from_toolbar(context, space_type, use_fallback_keys=True, use_reset=True):
         from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
         from bl_keymap_utils import keymap_from_toolbar
 
-        space_type = context.space_data.type
         cls = ToolSelectPanelHelper._tool_class_from_space_type(space_type)
         if cls is None:
-            return {'CANCELLED'}
+            return None, None
 
-        wm = context.window_manager
-        keymap = keymap_from_toolbar.generate(context, space_type)
+        return cls, keymap_from_toolbar.generate(
+            context,
+            space_type,
+            use_fallback_keys=use_fallback_keys,
+            use_reset=use_reset,
+        )
+
+    def execute(self, context):
+        space_type = context.space_data.type
+        cls, keymap = self.keymap_from_toolbar(context, space_type)
+        if keymap is None:
+            return {'CANCELLED'}
 
         def draw_menu(popover, context):
             layout = popover.layout
             layout.operator_context = 'INVOKE_REGION_WIN'
             cls.draw_cls(layout, context, detect_layout=False, scale_y=1.0)
 
+        wm = context.window_manager
         wm.popover(draw_menu, ui_units_x=8, keymap=keymap)
         return {'FINISHED'}
+
+
+class WM_OT_toolbar_fallback_pie(Operator):
+    bl_idname = "wm.toolbar_fallback_pie"
+    bl_label = "Fallback Tool Pie Menu"
+
+    @classmethod
+    def poll(cls, context):
+        return context.space_data is not None
+
+    def invoke(self, context, event):
+        from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+        space_type = context.space_data.type
+        cls = ToolSelectPanelHelper._tool_class_from_space_type(space_type)
+        if cls is None:
+            return {'PASS_THROUGH'}
+
+        # It's possible we don't have the fallback tool available.
+        # This can happen in the image editor for example when there is no selection
+        # in painting modes.
+        item, _ = cls._tool_get_by_id(context, cls.tool_fallback_id)
+        if item is None:
+            print("Tool", cls.tool_fallback_id, "not active in", cls)
+            return {'PASS_THROUGH'}
+
+        def draw_cb(self, context):
+            from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+            ToolSelectPanelHelper.draw_fallback_tool_items_for_pie_menu(self.layout, context)
+
+        wm = context.window_manager
+        wm.popup_menu_pie(draw_func=draw_cb, title="Fallback Tool", event=event)
+        return {'FINISHED'}
+
+
+class WM_OT_toolbar_prompt(Operator):
+    """Leader key like functionality for accessing tools"""
+    bl_idname = "wm.toolbar_prompt"
+    bl_label = "Toolbar Prompt"
+
+    @staticmethod
+    def _status_items_generate(cls, keymap, context):
+        from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+
+        # The keymap doesn't have the same order the tools are declared in,
+        # while we could support this, it's simpler to apply order here.
+        tool_map_id_to_order = {}
+        # Map the
+        tool_map_id_to_label = {}
+        for item in ToolSelectPanelHelper._tools_flatten(cls.tools_from_context(context)):
+            if item is not None:
+                tool_map_id_to_label[item.idname] = item.label
+                tool_map_id_to_order[item.idname] = len(tool_map_id_to_order)
+
+        status_items = []
+
+        for item in keymap.keymap_items:
+            name = item.name
+            key_str = item.to_string()
+            # These are duplicated from regular numbers.
+            if key_str.startswith("Numpad "):
+                continue
+            properties = item.properties
+            idname = item.idname
+            if idname == "wm.tool_set_by_id":
+                tool_idname = properties["name"]
+                name = tool_map_id_to_label[tool_idname]
+                name = name.replace("Annotate ", "")
+            else:
+                continue
+
+            status_items.append((tool_idname, name, item))
+
+        status_items.sort(
+            key=lambda a: tool_map_id_to_order[a[0]]
+        )
+        return status_items
+
+    def modal(self, context, event):
+        event_type = event.type
+        event_value = event.value
+
+        if event_type in {
+                'LEFTMOUSE', 'RIGHTMOUSE', 'MIDDLEMOUSE',
+                'WHEELDOWNMOUSE', 'WHEELUPMOUSE', 'WHEELINMOUSE', 'WHEELOUTMOUSE',
+                'ESC',
+        }:
+            context.workspace.status_text_set(None)
+            return {'CANCELLED', 'PASS_THROUGH'}
+
+        keymap = self._keymap
+        item = keymap.keymap_items.match_event(event)
+        if item is not None:
+            idname = item.idname
+            properties = item.properties
+            if idname == "wm.tool_set_by_id":
+                tool_idname = properties["name"]
+                bpy.ops.wm.tool_set_by_id(name=tool_idname)
+
+            context.workspace.status_text_set(None)
+            return {'FINISHED'}
+
+        # Pressing entry even again exists, as long as it's not mapped to a key (for convenience).
+        if event_type == self._init_event_type:
+            if event_value == 'RELEASE':
+                if not (event.ctrl or event.alt or event.shift or event.oskey):
+                    context.workspace.status_text_set(None)
+                    return {'CANCELLED'}
+
+        return {'RUNNING_MODAL'}
+
+    def invoke(self, context, event):
+        space_data = context.space_data
+        if space_data is None:
+            return {'CANCELLED'}
+
+        space_type = space_data.type
+        cls, keymap = WM_OT_toolbar.keymap_from_toolbar(
+            context,
+            space_type,
+            use_fallback_keys=False,
+            use_reset=False,
+        )
+        if (keymap is None) or (not keymap.keymap_items):
+            return {'CANCELLED'}
+
+        self._init_event_type = event.type
+
+        # Strip Left/Right, since "Left Alt" isn't especially useful.
+        init_event_type_as_text = self._init_event_type.title().split("_")
+        if init_event_type_as_text[0] in {"Left", "Right"}:
+            del init_event_type_as_text[0]
+        init_event_type_as_text = " ".join(init_event_type_as_text)
+
+        status_items = self._status_items_generate(cls, keymap, context)
+
+        def status_text_fn(self, context):
+
+            layout = self.layout
+            if True:
+                box = layout.row(align=True).box()
+                box.scale_x = 0.8
+                box.label(text=init_event_type_as_text)
+
+            flow = layout.grid_flow(columns=len(status_items), align=True, row_major=True)
+            for _, name, item in status_items:
+                row = flow.row(align=True)
+                row.template_event_from_keymap_item(item, text=name)
+
+        self._keymap = keymap
+
+        context.workspace.status_text_set(status_text_fn)
+
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
 
 
 class BatchRenameAction(bpy.types.PropertyGroup):
@@ -1816,9 +2000,13 @@ class BatchRenameAction(bpy.types.PropertyGroup):
     replace_src: StringProperty(name="Find")
     replace_dst: StringProperty(name="Replace")
     replace_match_case: BoolProperty(name="Case Sensitive")
-    replace_regex: BoolProperty(
-        name="Regular Expression",
+    use_replace_regex_src: BoolProperty(
+        name="Regular Expression Find",
         description="Use regular expressions to match text in the 'Find' field"
+    )
+    use_replace_regex_dst: BoolProperty(
+        name="Regular Expression Replace",
+        description="Use regular expression for the replacement text (supporting groups)"
     )
 
     # type: 'CASE'.
@@ -1827,7 +2015,7 @@ class BatchRenameAction(bpy.types.PropertyGroup):
         items=(
             ('UPPER', "Upper Case", ""),
             ('LOWER', "Lower Case", ""),
-            ('TITLE', "Title Caps", ""),
+            ('TITLE', "Title Case", ""),
         ),
     )
 
@@ -1840,7 +2028,7 @@ class WM_OT_batch_rename(Operator):
     bl_idname = "wm.batch_rename"
     bl_label = "Batch Rename"
 
-    bl_options = {'UNDO', 'INTERNAL'}
+    bl_options = {'UNDO'}
 
     data_type: EnumProperty(
         name="Type",
@@ -1919,7 +2107,7 @@ class WM_OT_batch_rename(Operator):
                     data = (
                         [pchan.bone for pchan in context.selected_pose_bones]
                         if only_selected else
-                        [pchan.bone for ob in context.objects_in_mode_unique_data for pbone in ob.pose.bones],
+                        [pbone.bone for ob in context.objects_in_mode_unique_data for pbone in ob.pose.bones],
                         "name",
                         "Bone(s)",
                     )
@@ -1991,7 +2179,6 @@ class WM_OT_batch_rename(Operator):
                     descr,
                 )
 
-
         return data
 
     @staticmethod
@@ -2029,13 +2216,18 @@ class WM_OT_batch_rename(Operator):
                     name = name.rstrip(chars_strip)
 
             elif ty == 'REPLACE':
-                if action.replace_regex:
+                if action.use_replace_regex_src:
                     replace_src = action.replace_src
+                    if action.use_replace_regex_dst:
+                        replace_dst = action.replace_dst
+                    else:
+                        replace_dst = action.replace_dst.replace("\\", "\\\\")
                 else:
                     replace_src = re.escape(action.replace_src)
+                    replace_dst = action.replace_dst.replace("\\", "\\\\")
                 name = re.sub(
                     replace_src,
-                    re.escape(action.replace_dst),
+                    replace_dst,
                     name,
                     flags=(
                         0 if action.replace_match_case else
@@ -2097,22 +2289,39 @@ class WM_OT_batch_rename(Operator):
                 box.row().prop(action, "strip_part")
             elif ty == 'REPLACE':
 
-                row = box.row()
-                re_error = None
-                if action.replace_regex:
+                row = box.row(align=True)
+                re_error_src = None
+                if action.use_replace_regex_src:
                     try:
                         re.compile(action.replace_src)
                     except Exception as ex:
+                        re_error_src = str(ex)
                         row.alert = True
-                        re_error = str(ex)
                 row.prop(action, "replace_src")
-                if re_error is not None:
-                    box.label(text=re_error)
+                row.prop(action, "use_replace_regex_src", text="", icon='SORTBYEXT')
+                if re_error_src is not None:
+                    box.label(text=re_error_src)
 
-                box.row().prop(action, "replace_dst")
+                re_error_dst = None
+                row = box.row(align=True)
+                if action.use_replace_regex_src:
+                    if action.use_replace_regex_dst:
+                        if re_error_src is None:
+                            try:
+                                re.sub(action.replace_src, action.replace_dst, "")
+                            except Exception as ex:
+                                re_error_dst = str(ex)
+                                row.alert = True
+
+                row.prop(action, "replace_dst")
+                rowsub = row.row(align=True)
+                rowsub.active = action.use_replace_regex_src
+                rowsub.prop(action, "use_replace_regex_dst", text="", icon='SORTBYEXT')
+                if re_error_dst is not None:
+                    box.label(text=re_error_dst)
+
                 row = box.row()
                 row.prop(action, "replace_match_case")
-                row.prop(action, "replace_regex")
             elif ty == 'CASE':
                 box.row().prop(action, "case_method", expand=True)
 
@@ -2151,12 +2360,19 @@ class WM_OT_batch_rename(Operator):
 
         # Sanitize actions.
         for action in actions:
-            if action.replace_regex:
+            if action.use_replace_regex_src:
                 try:
                     re.compile(action.replace_src)
                 except Exception as ex:
-                    self.report({'ERROR'}, "Invalid regular expression: " + str(ex))
+                    self.report({'ERROR'}, "Invalid regular expression (find): " + str(ex))
                     return {'CANCELLED'}
+
+                if action.use_replace_regex_dst:
+                    try:
+                        re.sub(action.replace_src, action.replace_dst, "")
+                    except Exception as ex:
+                        self.report({'ERROR'}, "Invalid regular expression (replace): " + str(ex))
+                        return {'CANCELLED'}
 
         total_len = 0
         change_len = 0
@@ -2168,7 +2384,7 @@ class WM_OT_batch_rename(Operator):
                 change_len += 1
             total_len += 1
 
-        self.report({'INFO'}, "Renamed {:d} of {:d} {:s}".format(total_len, change_len, descr))
+        self.report({'INFO'}, "Renamed {:d} of {:d} {:s}".format(change_len, total_len, descr))
 
         return {'FINISHED'}
 
@@ -2398,6 +2614,8 @@ classes = (
     WM_OT_tool_set_by_id,
     WM_OT_tool_set_by_index,
     WM_OT_toolbar,
+    WM_OT_toolbar_fallback_pie,
+    WM_OT_toolbar_prompt,
     BatchRenameAction,
     WM_OT_batch_rename,
     WM_MT_splash,

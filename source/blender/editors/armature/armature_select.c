@@ -251,12 +251,13 @@ void *get_bone_from_selectbuffer(Base **bases,
 /* x and y are mouse coords (area space) */
 void *get_nearest_bone(bContext *C, const int xy[2], bool findunsel, Base **r_base)
 {
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   ViewContext vc;
   rcti rect;
   unsigned int buffer[MAXPICKBUF];
   short hits;
 
-  ED_view3d_viewcontext_init(C, &vc);
+  ED_view3d_viewcontext_init(C, &vc, depsgraph);
 
   // rect.xmin = ... mouseco!
   rect.xmin = rect.xmax = xy[0];
@@ -362,6 +363,7 @@ static int armature_select_linked_invoke(bContext *C, wmOperator *op, const wmEv
   ED_armature_edit_sync_selection(arm->edbo);
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, base->object);
+  DEG_id_tag_update(&arm->id, ID_RECALC_COPY_ON_WRITE);
 
   return OPERATOR_FINISHED;
 }
@@ -648,8 +650,9 @@ bool ED_armature_edit_deselect_all_visible_multi_ex(struct Base **bases, uint ba
 
 bool ED_armature_edit_deselect_all_visible_multi(bContext *C)
 {
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   ViewContext vc;
-  ED_view3d_viewcontext_init(C, &vc);
+  ED_view3d_viewcontext_init(C, &vc, depsgraph);
   uint bases_len = 0;
   Base **bases = BKE_view_layer_array_from_bases_in_edit_mode_unique_data(
       vc.view_layer, vc.v3d, &bases_len);
@@ -674,12 +677,13 @@ static int ebone_select_flag(EditBone *ebone)
 bool ED_armature_edit_select_pick(
     bContext *C, const int mval[2], bool extend, bool deselect, bool toggle)
 {
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   ViewContext vc;
   EditBone *nearBone = NULL;
   int selmask;
   Base *basact = NULL;
 
-  ED_view3d_viewcontext_init(C, &vc);
+  ED_view3d_viewcontext_init(C, &vc, depsgraph);
   vc.mval[0] = mval[0];
   vc.mval[1] = mval[1];
 
@@ -789,6 +793,7 @@ bool ED_armature_edit_select_pick(
     }
 
     WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, basact->object);
+    DEG_id_tag_update(&arm->id, ID_RECALC_COPY_ON_WRITE);
     return true;
   }
 
@@ -1034,6 +1039,10 @@ static int armature_de_select_all_exec(bContext *C, wmOperator *op)
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, NULL);
 
+  /* Tagging only one object to refresh drawing. */
+  Object *obedit = CTX_data_edit_object(C);
+  DEG_id_tag_update(&obedit->id, ID_RECALC_SELECT);
+
   return OPERATOR_FINISHED;
 }
 
@@ -1151,6 +1160,7 @@ static int armature_de_select_more_exec(bContext *C, wmOperator *UNUSED(op))
     Object *ob = objects[ob_index];
     armature_select_more_less(ob, true);
     WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+    DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
   }
   MEM_freeN(objects);
 
@@ -1183,6 +1193,7 @@ static int armature_de_select_less_exec(bContext *C, wmOperator *UNUSED(op))
     Object *ob = objects[ob_index];
     armature_select_more_less(ob, false);
     WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+    DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
   }
   MEM_freeN(objects);
 
@@ -1271,6 +1282,7 @@ static void select_similar_length(bContext *C, const float thresh)
 
     if (changed) {
       WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
     }
   }
   MEM_freeN(objects);
@@ -1320,6 +1332,8 @@ static void select_similar_direction(bContext *C, const float thresh)
 
     if (changed) {
       WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
     }
   }
   MEM_freeN(objects);
@@ -1349,6 +1363,7 @@ static void select_similar_layer(bContext *C)
 
     if (changed) {
       WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
     }
   }
   MEM_freeN(objects);
@@ -1390,6 +1405,7 @@ static void select_similar_prefix(bContext *C)
 
     if (changed) {
       WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
     }
   }
   MEM_freeN(objects);
@@ -1431,6 +1447,7 @@ static void select_similar_suffix(bContext *C)
 
     if (changed) {
       WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+      DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
     }
   }
   MEM_freeN(objects);
@@ -1458,6 +1475,7 @@ static void select_similar_data_pchan(bContext *C, const size_t bytes_size, cons
   }
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, obedit);
+  DEG_id_tag_update(&obedit->id, ID_RECALC_COPY_ON_WRITE);
 }
 
 static void is_ancestor(EditBone *bone, EditBone *ancestor)
@@ -1492,6 +1510,7 @@ static void select_similar_children(bContext *C)
   }
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, obedit);
+  DEG_id_tag_update(&obedit->id, ID_RECALC_COPY_ON_WRITE);
 }
 
 static void select_similar_children_immediate(bContext *C)
@@ -1507,6 +1526,7 @@ static void select_similar_children_immediate(bContext *C)
   }
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, obedit);
+  DEG_id_tag_update(&obedit->id, ID_RECALC_COPY_ON_WRITE);
 }
 
 static void select_similar_siblings(bContext *C)
@@ -1526,6 +1546,7 @@ static void select_similar_siblings(bContext *C)
   }
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, obedit);
+  DEG_id_tag_update(&obedit->id, ID_RECALC_COPY_ON_WRITE);
 }
 
 static int armature_select_similar_exec(bContext *C, wmOperator *op)
@@ -1679,6 +1700,7 @@ static int armature_select_hierarchy_exec(bContext *C, wmOperator *op)
   ED_armature_edit_sync_selection(arm->edbo);
 
   WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+  DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
 
   return OPERATOR_FINISHED;
 }
@@ -1766,6 +1788,7 @@ static int armature_select_mirror_exec(bContext *C, wmOperator *op)
     ED_armature_edit_sync_selection(arm->edbo);
 
     WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, ob);
+    DEG_id_tag_update(&ob->id, ID_RECALC_COPY_ON_WRITE);
   }
   MEM_freeN(objects);
 
@@ -1894,6 +1917,7 @@ static int armature_shortest_path_pick_invoke(bContext *C, wmOperator *op, const
     ED_outliner_select_sync_from_edit_bone_tag(C);
     ED_armature_edit_sync_selection(arm->edbo);
     WM_event_add_notifier(C, NC_OBJECT | ND_BONE_SELECT, obedit);
+    DEG_id_tag_update(&obedit->id, ID_RECALC_COPY_ON_WRITE);
 
     return OPERATOR_FINISHED;
   }

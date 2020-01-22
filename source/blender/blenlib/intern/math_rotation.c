@@ -77,7 +77,7 @@ void mul_qt_qtqt(float q[4], const float q1[4], const float q2[4])
 }
 
 /**
- * \note:
+ * \note
  * Assumes a unit quaternion?
  *
  * in fact not, but you may want to use a unit quat, read on...
@@ -93,7 +93,7 @@ void mul_qt_qtqt(float q[4], const float q1[4], const float q2[4])
  * For people used to python mathutils, its like:
  * def mul_qt_v3(q, v): (q * Quaternion((0.0, v[0], v[1], v[2])) * q.conjugated())[1:]
  *
- * \note: multiplying by 3x3 matrix is ~25% faster.
+ * \note Multiplying by 3x3 matrix is ~25% faster.
  */
 void mul_qt_v3(const float q[4], float v[3])
 {
@@ -212,11 +212,13 @@ void quat_to_compatible_quat(float q[4], const float a[4], const float old[4])
   float old_unit[4];
   /* Skips `!finite_v4(old)` case too. */
   if (normalize_qt_qt(old_unit, old) > eps) {
+    float q_negate[4];
     float delta[4];
     rotation_between_quats_to_quat(delta, old_unit, a);
     mul_qt_qtqt(q, old, delta);
-    if ((q[0] < 0.0f) != (old[0] < 0.0f)) {
-      negate_v4(q);
+    negate_v4_v4(q_negate, q);
+    if (len_squared_v4v4(q_negate, old) < len_squared_v4v4(q, old)) {
+      copy_qt_qt(q, q_negate);
     }
   }
   else {
@@ -535,14 +537,15 @@ void rotation_between_quats_to_quat(float q[4], const float q1[4], const float q
   mul_qt_qtqt(q, tquat, q2);
 }
 
-/** Decompose a quaternion into a swing rotation (quaternion with the selected
- *  axis component locked at zero), followed by a twist rotation around the axis.
+/**
+ * Decompose a quaternion into a swing rotation (quaternion with the selected
+ * axis component locked at zero), followed by a twist rotation around the axis.
  *
- *  \param q: input quaternion.
- *  \param axis: twist axis in [0,1,2]
- *  \param r_swing[out]: if not NULL, receives the swing quaternion.
- *  \param r_twist[out]: if not NULL, receives the twist quaternion.
- *  \returns twist angle.
+ * \param q: input quaternion.
+ * \param axis: twist axis in [0,1,2]
+ * \param r_swing[out]: if not NULL, receives the swing quaternion.
+ * \param r_twist[out]: if not NULL, receives the twist quaternion.
+ * \returns twist angle.
  */
 float quat_split_swing_and_twist(const float q[4], int axis, float r_swing[4], float r_twist[4])
 {

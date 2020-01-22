@@ -66,7 +66,7 @@ void node_bsdf_principled(vec4 base_color,
   sheen *= dielectric;
   subsurface_color *= dielectric;
 
-  vec3 diffuse, f0, out_diff, out_spec, out_trans, out_refr, ssr_spec;
+  vec3 diffuse, f0, out_diff, out_spec, out_refr, ssr_spec;
   vec3 ctint = tint_from_color(base_color.rgb);
   convert_metallic_to_specular_tinted(
       base_color.rgb, ctint, metallic, specular, specular_tint, diffuse, f0);
@@ -99,8 +99,8 @@ void node_bsdf_principled(vec4 base_color,
                            1.0,
                            sss_scalef,
                            ior,
+                           true,
                            out_diff,
-                           out_trans,
                            out_spec,
                            out_refr,
                            ssr_spec);
@@ -113,30 +113,14 @@ void node_bsdf_principled(vec4 base_color,
   result = CLOSURE_DEFAULT;
   result.radiance = out_spec + out_refr;
   result.radiance += out_diff * out_sheen; /* Coarse approx. */
+  result.radiance += emission.rgb;
+  result.radiance *= alpha;
 
   closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
 
-  vec3 sss_radiance = (out_diff + out_trans) * alpha;
-#  ifndef USE_SSS
-  result.radiance += sss_radiance * mixed_ss_base_color * (1.0 - transmission);
-#  else
-#    ifdef USE_SSS_ALBEDO
-  vec3 sss_albedo = mixed_ss_base_color;
-#    else
-  sss_radiance *= mixed_ss_base_color;
-#    endif
-  sss_radiance *= (1.0 - transmission);
-  closure_load_sss_data(sss_scalef,
-                        sss_radiance,
-#    ifdef USE_SSS_ALBEDO
-                        sss_albedo,
-#    endif
-                        int(sss_id),
-                        result);
-#  endif /* USE_SSS */
+  mixed_ss_base_color *= alpha * (1.0 - transmission);
+  closure_load_sss_data(sss_scalef, out_diff, mixed_ss_base_color, int(sss_id), result);
 
-  result.radiance += emission.rgb;
-  result.radiance *= alpha;
   result.transmittance = vec3(1.0 - alpha);
 }
 
@@ -181,13 +165,15 @@ void node_bsdf_principled_dielectric(vec4 base_color,
   vec3 out_sheen = sheen * principled_sheen(NV, ctint, sheen_tint);
 
   eevee_closure_default(
-      N, diffuse, f0, vec3(1.0), int(ssr_id), roughness, 1.0, out_diff, out_spec, ssr_spec);
+      N, diffuse, f0, vec3(1.0), int(ssr_id), roughness, 1.0, true, out_diff, out_spec, ssr_spec);
 
   result = CLOSURE_DEFAULT;
   result.radiance = out_spec + out_diff * (diffuse + out_sheen);
-  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
   result.radiance += emission.rgb;
   result.radiance *= alpha;
+
+  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
+
   result.transmittance = vec3(1.0 - alpha);
 }
 
@@ -224,13 +210,16 @@ void node_bsdf_principled_metallic(vec4 base_color,
 
   vec3 f90 = mix(vec3(1.0), base_color.rgb, (1.0 - specular) * metallic);
 
-  eevee_closure_glossy(N, base_color.rgb, f90, int(ssr_id), roughness, 1.0, out_spec, ssr_spec);
+  eevee_closure_glossy(
+      N, base_color.rgb, f90, int(ssr_id), roughness, 1.0, true, out_spec, ssr_spec);
 
   result = CLOSURE_DEFAULT;
   result.radiance = out_spec;
-  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
   result.radiance += emission.rgb;
   result.radiance *= alpha;
+
+  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
+
   result.transmittance = vec3(1.0 - alpha);
 }
 
@@ -276,14 +265,17 @@ void node_bsdf_principled_clearcoat(vec4 base_color,
                           clearcoat * 0.25,
                           clearcoat_roughness,
                           1.0,
+                          true,
                           out_spec,
                           ssr_spec);
 
   result = CLOSURE_DEFAULT;
   result.radiance = out_spec;
-  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
   result.radiance += emission.rgb;
   result.radiance *= alpha;
+
+  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
+
   result.transmittance = vec3(1.0 - alpha);
 }
 
@@ -318,7 +310,7 @@ void node_bsdf_principled_subsurface(vec4 base_color,
   metallic = saturate(metallic);
   N = normalize(N);
 
-  vec3 diffuse, f0, out_diff, out_spec, out_trans, ssr_spec;
+  vec3 diffuse, f0, out_diff, out_spec, ssr_spec;
   vec3 ctint = tint_from_color(base_color.rgb);
   convert_metallic_to_specular_tinted(
       base_color.rgb, ctint, metallic, specular, specular_tint, diffuse, f0);
@@ -340,37 +332,22 @@ void node_bsdf_principled_subsurface(vec4 base_color,
                      roughness,
                      1.0,
                      sss_scalef,
+                     true,
                      out_diff,
-                     out_trans,
                      out_spec,
                      ssr_spec);
 
   result = CLOSURE_DEFAULT;
   result.radiance = out_spec;
-  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
-
-  vec3 sss_radiance = (out_diff + out_trans) * alpha;
-#  ifndef USE_SSS
-  result.radiance += sss_radiance * mixed_ss_base_color * (1.0 - transmission);
-#  else
-#    ifdef USE_SSS_ALBEDO
-  vec3 sss_albedo = mixed_ss_base_color;
-#    else
-  sss_radiance *= mixed_ss_base_color;
-#    endif
-  sss_radiance *= (1.0 - transmission);
-  closure_load_sss_data(sss_scalef,
-                        sss_radiance,
-#    ifdef USE_SSS_ALBEDO
-                        sss_albedo,
-#    endif
-                        int(sss_id),
-                        result);
-#  endif /* USE_SSS */
-
   result.radiance += out_diff * out_sheen;
   result.radiance += emission.rgb;
   result.radiance *= alpha;
+
+  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
+
+  mixed_ss_base_color *= alpha * (1.0 - transmission);
+  closure_load_sss_data(sss_scalef, out_diff, mixed_ss_base_color, int(sss_id), result);
+
   result.transmittance = vec3(1.0 - alpha);
 }
 
@@ -408,8 +385,17 @@ void node_bsdf_principled_glass(vec4 base_color,
   vec3 f0, out_spec, out_refr, ssr_spec;
   f0 = mix(vec3(1.0), base_color.rgb, specular_tint);
 
-  eevee_closure_glass(
-      N, vec3(1.0), vec3(1.0), int(ssr_id), roughness, 1.0, ior, out_spec, out_refr, ssr_spec);
+  eevee_closure_glass(N,
+                      vec3(1.0),
+                      vec3(1.0),
+                      int(ssr_id),
+                      roughness,
+                      1.0,
+                      ior,
+                      true,
+                      out_spec,
+                      out_refr,
+                      ssr_spec);
 
   vec3 refr_color = base_color.rgb;
   refr_color *= (refractionDepth > 0.0) ? refr_color :
@@ -423,9 +409,9 @@ void node_bsdf_principled_glass(vec4 base_color,
 
   result = CLOSURE_DEFAULT;
   result.radiance = mix(out_refr, out_spec, fresnel);
-  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
   result.radiance += emission.rgb;
   result.radiance *= alpha;
+  closure_load_ssr_data(ssr_spec * alpha, roughness, N, viewCameraVec, int(ssr_id), result);
   result.transmittance = vec3(1.0 - alpha);
 }
 #else

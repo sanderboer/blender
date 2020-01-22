@@ -22,34 +22,22 @@
 set(USE_EXPERIMENTAL_TESTS FALSE)
 
 set(TEST_SRC_DIR ${CMAKE_SOURCE_DIR}/../lib/tests)
+set(TEST_PYTHON_DIR ${CMAKE_SOURCE_DIR}/tests/python)
 set(TEST_OUT_DIR ${CMAKE_BINARY_DIR}/tests)
 
 # ugh, any better way to do this on testing only?
 file(MAKE_DIRECTORY ${TEST_OUT_DIR})
 file(MAKE_DIRECTORY ${TEST_OUT_DIR}/io_tests)
 
-#~  if(NOT IS_DIRECTORY ${TEST_SRC_DIR})
-#~      message(FATAL_ERROR "CMake test directory not found!")
-#~  endif()
-
-# all calls to blender use this
-# --env-system-scripts allows to run without the install target, but does
-# not work for all configurations.
-if(WITH_CYCLES OR (APPLE AND (${CMAKE_GENERATOR} MATCHES "Xcode")))
-  set(TEST_BLENDER_EXE_PARAMS --background -noaudio --factory-startup)
-else()
-  set(TEST_BLENDER_EXE_PARAMS --background -noaudio --factory-startup --env-system-scripts ${CMAKE_SOURCE_DIR}/release/scripts)
-endif()
-
-# for testing with valgrind prefix: valgrind --track-origins=yes --error-limit=no
-# set(TEST_BLENDER_EXE_BARE ${TEST_BLENDER_EXE})
-# set(TEST_BLENDER_EXE ${TEST_BLENDER_EXE} ${TEST_BLENDER_EXE_PARAMS} )
+# if(NOT IS_DIRECTORY ${TEST_SRC_DIR})
+#   message(FATAL_ERROR "CMake test directory not found!")
+# endif()
 
 # Run Blender command with parameters.
 function(add_blender_test testname)
   add_test(
     NAME ${testname}
-    COMMAND "$<TARGET_FILE:blender>" ${TEST_BLENDER_EXE_PARAMS} ${ARGN}
+    COMMAND "${TEST_BLENDER_EXE}" ${TEST_BLENDER_EXE_PARAMS} ${ARGN}
   )
 
   # Don't fail tests on leaks since these often happen in external libraries
@@ -62,9 +50,7 @@ function(add_python_test testname testscript)
   if(MSVC)
     add_test(
       NAME ${testname}
-      COMMAND
-        "$<TARGET_FILE_DIR:blender>/${BLENDER_VERSION_MAJOR}.${BLENDER_VERSION_MINOR}/python/bin/python$<$<CONFIG:Debug>:_d>"
-        ${testscript} ${ARGN}
+      COMMAND ${TEST_PYTHON_EXE} ${testscript} ${ARGN}
     )
   else()
     add_test(
@@ -129,17 +115,29 @@ add_blender_test(
 )
 
 # ------------------------------------------------------------------------------
+# DATA MANAGEMENT TESTS
+
+add_blender_test(
+  id_management
+  --python ${CMAKE_CURRENT_LIST_DIR}/bl_id_management.py
+)
+
+# ------------------------------------------------------------------------------
 # MODELING TESTS
 add_blender_test(
   bmesh_bevel
   ${TEST_SRC_DIR}/modeling/bevel_regression.blend
-  --python-text run_tests
+  --python ${TEST_PYTHON_DIR}/bevel_operator.py
+  --
+  --run-all-tests
 )
 
 add_blender_test(
   bmesh_boolean
   ${TEST_SRC_DIR}/modeling/bool_regression.blend
-  --python-text run_tests
+  --python ${TEST_PYTHON_DIR}/boolean_operator.py
+  --
+  --run-all-tests
 )
 
 add_blender_test(
@@ -154,6 +152,24 @@ add_blender_test(
   object_modifier_array
   ${TEST_SRC_DIR}/modifier_stack/array_test.blend
   --python-text run_tests.py
+)
+
+add_blender_test(
+  modifiers
+  ${TEST_SRC_DIR}/modeling/modifiers.blend
+  --python ${TEST_PYTHON_DIR}/modifiers.py
+  --
+  --run-all-tests
+)
+
+# ------------------------------------------------------------------------------
+# OPERATORS TESTS
+add_blender_test(
+  operators
+  ${TEST_SRC_DIR}/modeling/operators.blend
+  --python ${TEST_PYTHON_DIR}/operators.py
+  --
+  --run-all-tests
 )
 
 # ------------------------------------------------------------------------------
@@ -528,7 +544,7 @@ if(WITH_CYCLES OR WITH_OPENGL_RENDER_TESTS)
         add_python_test(
           cycles_${render_test}
           ${CMAKE_CURRENT_LIST_DIR}/cycles_render_tests.py
-          -blender "$<TARGET_FILE:blender>"
+          -blender "${TEST_BLENDER_EXE}"
           -testdir "${TEST_SRC_DIR}/render/${render_test}"
           -idiff "${OPENIMAGEIO_IDIFF}"
           -outdir "${TEST_OUT_DIR}/cycles"
@@ -541,7 +557,7 @@ if(WITH_CYCLES OR WITH_OPENGL_RENDER_TESTS)
         add_python_test(
           eevee_${render_test}_test
           ${CMAKE_CURRENT_LIST_DIR}/eevee_render_tests.py
-          -blender "$<TARGET_FILE:blender>"
+          -blender "${TEST_BLENDER_EXE}"
           -testdir "${TEST_SRC_DIR}/render/${render_test}"
           -idiff "${OPENIMAGEIO_IDIFF}"
           -outdir "${TEST_OUT_DIR}/eevee"
@@ -552,7 +568,7 @@ if(WITH_CYCLES OR WITH_OPENGL_RENDER_TESTS)
         add_python_test(
           workbench_${render_test}_test
           ${CMAKE_CURRENT_LIST_DIR}/workbench_render_tests.py
-          -blender "$<TARGET_FILE:blender>"
+          -blender "${TEST_BLENDER_EXE}"
           -testdir "${TEST_SRC_DIR}/render/${render_test}"
           -idiff "${OPENIMAGEIO_IDIFF}"
           -outdir "${TEST_OUT_DIR}/workbench"
@@ -579,7 +595,7 @@ if(WITH_OPENGL_DRAW_TESTS)
           add_python_test(
             opengl_draw_${child}
             ${CMAKE_CURRENT_LIST_DIR}/opengl_draw_tests.py
-            -blender "$<TARGET_FILE:blender>"
+            -blender "${TEST_BLENDER_EXE}"
             -testdir "${child_path}"
             -idiff "${OPENIMAGEIO_IDIFF}"
             -outdir "${TEST_OUT_DIR}/opengl_draw"
@@ -602,7 +618,7 @@ if(WITH_ALEMBIC)
   add_python_test(
     alembic_tests
     ${CMAKE_CURRENT_LIST_DIR}/alembic_tests.py
-    --blender "$<TARGET_FILE:blender>"
+    --blender "${TEST_BLENDER_EXE}"
     --testdir "${TEST_SRC_DIR}/alembic"
     --alembic-root "${ALEMBIC_ROOT_DIR}"
   )
@@ -619,7 +635,7 @@ if(WITH_CODEC_FFMPEG)
   add_python_test(
     ffmpeg
     ${CMAKE_CURRENT_LIST_DIR}/ffmpeg_tests.py
-    --blender "$<TARGET_FILE:blender>"
+    --blender "${TEST_BLENDER_EXE}"
     --testdir "${TEST_SRC_DIR}/ffmpeg"
   )
 endif()

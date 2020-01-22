@@ -55,7 +55,6 @@
 #include "BKE_library_remap.h"
 #include "BKE_main.h"
 #include "BKE_report.h"
-#include "BKE_scene.h"
 
 #include "BKE_idcode.h"
 
@@ -576,7 +575,7 @@ void WM_OT_link(wmOperatorType *ot)
                                  FILE_LOADLIB,
                                  FILE_OPENFILE,
                                  WM_FILESEL_FILEPATH | WM_FILESEL_DIRECTORY | WM_FILESEL_FILENAME |
-                                     WM_FILESEL_RELPATH | WM_FILESEL_FILES,
+                                     WM_FILESEL_RELPATH | WM_FILESEL_FILES | WM_FILESEL_SHOW_PROPS,
                                  FILE_DEFAULTDISPLAY,
                                  FILE_SORT_ALPHA);
 
@@ -600,7 +599,7 @@ void WM_OT_append(wmOperatorType *ot)
                                  FILE_LOADLIB,
                                  FILE_OPENFILE,
                                  WM_FILESEL_FILEPATH | WM_FILESEL_DIRECTORY | WM_FILESEL_FILENAME |
-                                     WM_FILESEL_FILES,
+                                     WM_FILESEL_FILES | WM_FILESEL_SHOW_PROPS,
                                  FILE_DEFAULTDISPLAY,
                                  FILE_SORT_ALPHA);
 
@@ -829,7 +828,7 @@ static void lib_relocate_do(Main *bmain,
         BLI_strncpy(&old_id->name[len], "~000", 7);
       }
 
-      id_sort_by_name(which_libbase(bmain, GS(old_id->name)), old_id);
+      id_sort_by_name(which_libbase(bmain, GS(old_id->name)), old_id, NULL);
 
       BKE_reportf(
           reports,

@@ -120,31 +120,73 @@ namespace DEG {
 /* ***************** */
 /* Relations Builder */
 
+namespace {
+
 /* TODO(sergey): This is somewhat weak, but we don't want neither false-positive
- * time dependencies nor special exceptions in the depsgraph evaluation.
- */
-static bool python_driver_depends_on_time(ChannelDriver *driver)
+ * time dependencies nor special exceptions in the depsgraph evaluation. */
+
+bool python_driver_exression_depends_on_time(const char *expression)
 {
-  if (driver->expression[0] == '\0') {
+  if (expression[0] == '\0') {
     /* Empty expression depends on nothing. */
     return false;
   }
-  if (strchr(driver->expression, '(') != NULL) {
+  if (strchr(expression, '(') != NULL) {
     /* Function calls are considered dependent on a time. */
     return true;
   }
-  if (strstr(driver->expression, "frame") != NULL) {
+  if (strstr(expression, "frame") != NULL) {
     /* Variable `frame` depends on time. */
-    /* TODO(sergey): This is a bit weak, but not sure about better way of
-     * handling this. */
+    /* TODO(sergey): This is a bit weak, but not sure about better way of handling this. */
     return true;
   }
-  /* Possible indirect time relation s should be handled via variable
-   * targets. */
+  /* Possible indirect time relation s should be handled via variable targets. */
   return false;
 }
 
-static bool particle_system_depends_on_time(ParticleSystem *psys)
+bool driver_target_depends_on_time(const DriverTarget *target)
+{
+  if (target->idtype == ID_SCE &&
+      (target->rna_path != NULL && STREQ(target->rna_path, "frame_current"))) {
+    return true;
+  }
+  return false;
+}
+
+bool driver_variable_depends_on_time(const DriverVar *variable)
+{
+  for (int i = 0; i < variable->num_targets; ++i) {
+    if (driver_target_depends_on_time(&variable->targets[i])) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool driver_variables_depends_on_time(const ListBase *variables)
+{
+  LISTBASE_FOREACH (const DriverVar *, variable, variables) {
+    if (driver_variable_depends_on_time(variable)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool driver_depends_on_time(ChannelDriver *driver)
+{
+  if (driver->type == DRIVER_TYPE_PYTHON) {
+    if (python_driver_exression_depends_on_time(driver->expression)) {
+      return true;
+    }
+  }
+  if (driver_variables_depends_on_time(&driver->variables)) {
+    return true;
+  }
+  return false;
+}
+
+bool particle_system_depends_on_time(ParticleSystem *psys)
 {
   ParticleSettings *part = psys->part;
   /* Non-hair particles we always consider dependent on time. */
@@ -159,7 +201,7 @@ static bool particle_system_depends_on_time(ParticleSystem *psys)
   return false;
 }
 
-static bool object_particles_depends_on_time(Object *object)
+bool object_particles_depends_on_time(Object *object)
 {
   if (object->type != OB_MESH) {
     return false;
@@ -172,7 +214,7 @@ static bool object_particles_depends_on_time(Object *object)
   return false;
 }
 
-static bool check_id_has_anim_component(ID *id)
+bool check_id_has_anim_component(ID *id)
 {
   AnimData *adt = BKE_animdata_from_id(id);
   if (adt == NULL) {
@@ -181,11 +223,11 @@ static bool check_id_has_anim_component(ID *id)
   return (adt->action != NULL) || (!BLI_listbase_is_empty(&adt->nla_tracks));
 }
 
-static OperationCode bone_target_opcode(ID *target,
-                                        const char *subtarget,
-                                        ID *id,
-                                        const char *component_subdata,
-                                        RootPChanMap *root_map)
+OperationCode bone_target_opcode(ID *target,
+                                 const char *subtarget,
+                                 ID *id,
+                                 const char *component_subdata,
+                                 RootPChanMap *root_map)
 {
   /* Same armature.  */
   if (target == id) {
@@ -200,10 +242,12 @@ static OperationCode bone_target_opcode(ID *target,
   return OperationCode::BONE_DONE;
 }
 
-static bool object_have_geometry_component(const Object *object)
+bool object_have_geometry_component(const Object *object)
 {
   return ELEM(object->type, OB_MESH, OB_CURVE, OB_FONT, OB_SURF, OB_MBALL, OB_LATTICE, OB_GPENCIL);
 }
+
+}  // namespace
 
 /* **** General purpose functions ****  */
 
@@ -657,20 +701,8 @@ void DepsgraphRelationBuilder::build_object(Base *base, Object *object)
     build_particle_systems(object);
   }
   /* Proxy object to copy from. */
-  if (object->proxy_from != NULL) {
-    /* Object is linked here (comes from the library). */
-    build_object(NULL, object->proxy_from);
-    ComponentKey ob_transform_key(&object->proxy_from->id, NodeType::TRANSFORM);
-    ComponentKey proxy_transform_key(&object->id, NodeType::TRANSFORM);
-    add_relation(ob_transform_key, proxy_transform_key, "Proxy Transform");
-  }
-  if (object->proxy_group != NULL && object->proxy_group != object->proxy) {
-    /* Object is local here (local in .blend file, users interacts with it). */
-    build_object(NULL, object->proxy_group);
-    OperationKey proxy_group_eval_key(
-        &object->proxy_group->id, NodeType::TRANSFORM, OperationCode::TRANSFORM_EVAL);
-    add_relation(proxy_group_eval_key, transform_eval_key, "Proxy Group Transform");
-  }
+  build_object_proxy_from(object);
+  build_object_proxy_group(object);
   /* Object dupligroup. */
   if (object->instance_collection != NULL) {
     build_collection(NULL, object, object->instance_collection);
@@ -683,6 +715,31 @@ void DepsgraphRelationBuilder::build_object(Base *base, Object *object)
   add_relation(final_transform_key, synchronize_key, "Synchronize to Original");
   /* Parameters. */
   build_parameters(&object->id);
+}
+
+void DepsgraphRelationBuilder::build_object_proxy_from(Object *object)
+{
+  if (object->proxy_from == NULL) {
+    return;
+  }
+  /* Object is linked here (comes from the library). */
+  build_object(NULL, object->proxy_from);
+  ComponentKey ob_transform_key(&object->proxy_from->id, NodeType::TRANSFORM);
+  ComponentKey proxy_transform_key(&object->id, NodeType::TRANSFORM);
+  add_relation(ob_transform_key, proxy_transform_key, "Proxy Transform");
+}
+
+void DepsgraphRelationBuilder::build_object_proxy_group(Object *object)
+{
+  if (object->proxy_group == NULL || object->proxy_group == object->proxy) {
+    return;
+  }
+  /* Object is local here (local in .blend file, users interacts with it). */
+  build_object(NULL, object->proxy_group);
+  OperationKey proxy_group_eval_key(
+      &object->proxy_group->id, NodeType::TRANSFORM, OperationCode::TRANSFORM_EVAL);
+  OperationKey transform_eval_key(&object->id, NodeType::TRANSFORM, OperationCode::TRANSFORM_EVAL);
+  add_relation(proxy_group_eval_key, transform_eval_key, "Proxy Group Transform");
 }
 
 void DepsgraphRelationBuilder::build_object_flags(Base *base, Object *object)
@@ -1346,9 +1403,11 @@ void DepsgraphRelationBuilder::build_action(bAction *action)
   if (built_map_.checkIsBuiltAndTag(action)) {
     return;
   }
-  TimeSourceKey time_src_key;
-  ComponentKey animation_key(&action->id, NodeType::ANIMATION);
-  add_relation(time_src_key, animation_key, "TimeSrc -> Animation");
+  if (!BLI_listbase_is_empty(&action->curves)) {
+    TimeSourceKey time_src_key;
+    ComponentKey animation_key(&action->id, NodeType::ANIMATION);
+    add_relation(time_src_key, animation_key, "TimeSrc -> Animation");
+  }
 }
 
 void DepsgraphRelationBuilder::build_driver(ID *id, FCurve *fcu)
@@ -1367,7 +1426,7 @@ void DepsgraphRelationBuilder::build_driver(ID *id, FCurve *fcu)
   /* It's quite tricky to detect if the driver actually depends on time or
    * not, so for now we'll be quite conservative here about optimization and
    * consider all python drivers to be depending on time. */
-  if ((driver->type == DRIVER_TYPE_PYTHON) && python_driver_depends_on_time(driver)) {
+  if (driver_depends_on_time(driver)) {
     TimeSourceKey time_src_key;
     add_relation(time_src_key, driver_key, "TimeSrc -> Driver");
   }
@@ -1809,7 +1868,7 @@ void DepsgraphRelationBuilder::build_particle_settings(ParticleSettings *part)
       particle_settings_init_key, particle_settings_eval_key, "Particle Settings Init Order");
   add_relation(particle_settings_reset_key, particle_settings_eval_key, "Particle Settings Reset");
   /* Texture slots. */
-  for (int mtex_index = 0; mtex_index < MAX_MTEX; ++mtex_index) {
+  for (int mtex_index = 0; mtex_index < MAX_MTEX; mtex_index++) {
     MTex *mtex = part->mtex[mtex_index];
     if (mtex == NULL || mtex->tex == NULL) {
       continue;
@@ -2258,7 +2317,7 @@ void DepsgraphRelationBuilder::build_material(Material *material)
 
 void DepsgraphRelationBuilder::build_materials(Material **materials, int num_materials)
 {
-  for (int i = 0; i < num_materials; ++i) {
+  for (int i = 0; i < num_materials; i++) {
     if (materials[i] == NULL) {
       continue;
     }
@@ -2615,6 +2674,26 @@ void DepsgraphRelationBuilder::build_copy_on_write_relations(IDNode *id_node)
       BLI_assert(object->type == OB_EMPTY);
     }
   }
+
+#if 0
+  /* NOTE: Relation is disabled since AnimationBackup() is disabled.
+   * See comment in  AnimationBackup:init_from_id(). */
+
+  /* Copy-on-write of write will iterate over f-curves to store current values corresponding
+   * to their RNA path. This means that action must be copied prior to the ID's copy-on-write,
+   * otherwise depsgraph might try to access freed data. */
+  AnimData *animation_data = BKE_animdata_from_id(id_orig);
+  if (animation_data != NULL) {
+    if (animation_data->action != NULL) {
+      OperationKey action_copy_on_write_key(
+          &animation_data->action->id, NodeType::COPY_ON_WRITE, OperationCode::COPY_ON_WRITE);
+      add_relation(action_copy_on_write_key,
+                   copy_on_write_key,
+                   "Eval Order",
+                   RELATION_FLAG_GODMODE | RELATION_FLAG_NO_FLUSH);
+    }
+  }
+#endif
 }
 
 /* **** ID traversal callbacks functions **** */

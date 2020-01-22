@@ -85,7 +85,9 @@ static const char *STUDIOLIGHT_MATCAP_DEFAULT = "basic_1.exr";
 
 /* ITER MACRO */
 
-/** Iter on all pixel giving texel center position and pixel pointer.
+/**
+ * Iter on all pixel giving texel center position and pixel pointer.
+ *
  * Arguments
  *   type : type of src.
  *   src : source buffer.
@@ -762,7 +764,7 @@ static void studiolight_spherical_harmonics_calculate_coefficients(StudioLight *
 
   /* The sum of solid angle should be equal to the solid angle of the sphere (4 PI),
    * so normalize in order to make our weightAccum exactly match 4 PI. */
-  for (int i = 0; i < STUDIOLIGHT_SH_COEFS_LEN; ++i) {
+  for (int i = 0; i < STUDIOLIGHT_SH_COEFS_LEN; i++) {
     mul_v3_fl(sh[i], M_PI * 4.0f / weight_accum);
   }
 }
@@ -801,11 +803,11 @@ static float studiolight_spherical_harmonics_lambda_get(float *sh, float max_lap
   }
 
   const int no_iterations = 10000000;
-  for (int i = 0; i < no_iterations; ++i) {
+  for (int i = 0; i < no_iterations; i++) {
     float f = 0.0f;
     float fd = 0.0f;
 
-    for (int level = 1; level < STUDIOLIGHT_SH_BANDS; ++level) {
+    for (int level = 1; level < STUDIOLIGHT_SH_BANDS; level++) {
       f += table_l[level] * table_b[level] / SQUARE(1.0f + lambda * table_l[level]);
       fd += (2.0f * SQUARE(table_l[level]) * table_b[level]) /
             CUBE(1.0f + lambda * table_l[level]);
@@ -882,7 +884,7 @@ BLI_INLINE void studiolight_spherical_harmonics_eval(StudioLight *sl,
 {
 #if STUDIOLIGHT_SH_BANDS == 2
   float(*sh)[3] = (float(*)[3])sl->spherical_harmonics_coefs;
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 3; i++) {
     color[i] = studiolight_spherical_harmonics_geomerics_eval(
         normal, sh[0][i], sh[1][i], sh[2][i], sh[3][i]);
   }
@@ -946,7 +948,7 @@ BLI_INLINE void studiolight_spherical_harmonics_eval(StudioLight *sl,
 /* This modify the radiance into irradiance. */
 static void studiolight_spherical_harmonics_apply_band_factors(StudioLight *sl, float (*sh)[3])
 {
-  static float sl_sh_band_factors[5] = {
+  static const float sl_sh_band_factors[5] = {
       1.0f,
       2.0f / 3.0f,
       1.0f / 4.0f,
@@ -1074,7 +1076,7 @@ static float wrapped_lighting(float NL, float w)
 static float blinn_specular(const float L[3],
                             const float I[3],
                             const float N[3],
-                            float R[3],
+                            const float R[3],
                             float NL,
                             float roughness,
                             float wrap)
@@ -1118,7 +1120,7 @@ static void studiolight_lights_eval(StudioLight *sl, float color[3], const float
   copy_v3_v3(spec_light, sl->light_ambient);
 
   reflect_v3_v3v3(R, I, N);
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < 3; i++) {
     SolidLight *light = &sl->light[i];
     if (light->flag) {
       /* Diffuse lighting */
@@ -1666,7 +1668,8 @@ StudioLight *BKE_studiolight_create(const char *path,
                                     const float light_ambient[3])
 {
   StudioLight *sl = studiolight_create(STUDIOLIGHT_EXTERNAL_FILE | STUDIOLIGHT_USER_DEFINED |
-                                       STUDIOLIGHT_TYPE_STUDIO);
+                                       STUDIOLIGHT_TYPE_STUDIO |
+                                       STUDIOLIGHT_SPECULAR_HIGHLIGHT_PASS);
 
   char filename[FILE_MAXFILE];
   BLI_split_file_part(path, filename, FILE_MAXFILE);
@@ -1686,7 +1689,7 @@ StudioLight *BKE_studiolight_create(const char *path,
 StudioLight *BKE_studiolight_studio_edit_get(void)
 {
   static StudioLight sl = {0};
-  sl.flag = STUDIOLIGHT_TYPE_STUDIO;
+  sl.flag = STUDIOLIGHT_TYPE_STUDIO | STUDIOLIGHT_SPECULAR_HIGHLIGHT_PASS;
 
   memcpy(sl.light, U.light_param, sizeof(*sl.light) * 4);
   memcpy(sl.light_ambient, U.light_ambient, sizeof(*sl.light_ambient) * 3);

@@ -80,7 +80,7 @@ static void gpencil_set_buffer_stroke_point(GPUVertBuf *vbo,
                                             uint thickness_id,
                                             uint uvdata_id,
                                             uint prev_pos_id,
-                                            float ref_pt[3],
+                                            const float ref_pt[3],
                                             short thickness,
                                             const float ink[4])
 {
@@ -110,7 +110,7 @@ static void gpencil_set_fill_point(GPUVertBuf *vbo,
                                    int idx,
                                    bGPDspoint *pt,
                                    const float fcolor[4],
-                                   float uv[2],
+                                   const float uv[2],
                                    uint pos_id,
                                    uint color_id,
                                    uint text_id)
@@ -338,7 +338,7 @@ void gpencil_get_fill_geom(struct GpencilBatchCacheElem *be,
   /* Calculate triangles cache for filling area (must be done only after changes) */
   if ((gps->flag & GP_STROKE_RECALC_GEOMETRY) || (gps->tot_triangles == 0) ||
       (gps->triangles == NULL)) {
-    gpencil_triangulate_stroke_fill(ob, gps);
+    BKE_gpencil_triangulate_stroke_fill((bGPdata *)ob->data, gps);
   }
 
   BLI_assert(gps->tot_triangles >= 1);
@@ -886,7 +886,7 @@ void gpencil_get_edlin_geom(struct GpencilBatchCacheElem *be,
 
 static void set_grid_point(GPUVertBuf *vbo,
                            int idx,
-                           float col_grid[4],
+                           const float col_grid[4],
                            uint pos_id,
                            uint color_id,
                            float v1,

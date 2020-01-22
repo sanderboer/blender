@@ -38,7 +38,6 @@
 #include "BKE_context.h"
 #include "BKE_customdata.h"
 #include "BKE_editmesh.h"
-#include "BKE_main.h"
 #include "BKE_mesh_mapping.h"
 #include "BKE_paint.h"
 
@@ -47,10 +46,6 @@
 #include "ED_screen.h"
 #include "ED_image.h"
 #include "ED_mesh.h"
-
-#include "GPU_immediate.h"
-#include "GPU_immediate_util.h"
-#include "GPU_state.h"
 
 #include "WM_api.h"
 #include "WM_types.h"
@@ -151,7 +146,7 @@ typedef struct Temp_UvData {
 
 static void HC_relaxation_iteration_uv(BMEditMesh *em,
                                        UvSculptData *sculptdata,
-                                       float mouse_coord[2],
+                                       const float mouse_coord[2],
                                        float alpha,
                                        float radius,
                                        float aspectRatio)
@@ -239,7 +234,7 @@ static void HC_relaxation_iteration_uv(BMEditMesh *em,
 
 static void laplacian_relaxation_iteration_uv(BMEditMesh *em,
                                               UvSculptData *sculptdata,
-                                              float mouse_coord[2],
+                                              const float mouse_coord[2],
                                               float alpha,
                                               float radius,
                                               float aspectRatio)
@@ -526,18 +521,18 @@ static UvSculptData *uv_sculpt_stroke_init(bContext *C, wmOperator *op, const wm
     if (do_island_optimization) {
       /* We will need island information */
       if (ts->uv_flag & UV_SYNC_SELECTION) {
-        data->elementMap = BM_uv_element_map_create(bm, false, true, true);
+        data->elementMap = BM_uv_element_map_create(bm, scene, false, false, true, true);
       }
       else {
-        data->elementMap = BM_uv_element_map_create(bm, true, true, true);
+        data->elementMap = BM_uv_element_map_create(bm, scene, true, false, true, true);
       }
     }
     else {
       if (ts->uv_flag & UV_SYNC_SELECTION) {
-        data->elementMap = BM_uv_element_map_create(bm, false, true, false);
+        data->elementMap = BM_uv_element_map_create(bm, scene, false, false, true, false);
       }
       else {
-        data->elementMap = BM_uv_element_map_create(bm, true, true, false);
+        data->elementMap = BM_uv_element_map_create(bm, scene, true, false, true, false);
       }
     }
 
@@ -812,6 +807,23 @@ static int uv_sculpt_stroke_modal(bContext *C, wmOperator *op, const wmEvent *ev
   return OPERATOR_RUNNING_MODAL;
 }
 
+static bool uv_sculpt_stroke_poll(bContext *C)
+{
+  if (ED_operator_uvedit_space_image(C)) {
+    /* While these values could be initialized on demand,
+     * the only case this would be useful is running from the operator search popup.
+     * This is such a corner case that it's simpler to check a brush has already been created
+     * (something the tool system ensures). */
+    Scene *scene = CTX_data_scene(C);
+    ToolSettings *ts = scene->toolsettings;
+    Brush *brush = BKE_paint_brush(&ts->uvsculpt->paint);
+    if (brush != NULL) {
+      return true;
+    }
+  }
+  return false;
+}
+
 void SCULPT_OT_uv_sculpt_stroke(wmOperatorType *ot)
 {
   static const EnumPropertyItem stroke_mode_items[] = {
@@ -837,7 +849,7 @@ void SCULPT_OT_uv_sculpt_stroke(wmOperatorType *ot)
   /* api callbacks */
   ot->invoke = uv_sculpt_stroke_invoke;
   ot->modal = uv_sculpt_stroke_modal;
-  ot->poll = ED_operator_uvedit_space_image;
+  ot->poll = uv_sculpt_stroke_poll;
 
   /* flags */
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;

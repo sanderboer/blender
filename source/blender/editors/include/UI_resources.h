@@ -99,6 +99,8 @@ typedef enum ThemeColorID {
   TH_EDGE_FACESEL,
   TH_FACE,
   TH_FACE_SELECT,
+  TH_FACE_BACK,
+  TH_FACE_FRONT,
   TH_NORMAL,
   TH_VNORMAL,
   TH_LNORMAL,
@@ -136,10 +138,12 @@ typedef enum ThemeColorID {
   TH_SYNTAX_D,
   TH_SYNTAX_N,
   TH_SYNTAX_S,
+  TH_LINENUMBERS,
 
   TH_BONE_SOLID,
   TH_BONE_POSE,
   TH_BONE_POSE_ACTIVE,
+  TH_BONE_LOCKED_WEIGHT,
 
   TH_STRIP,
   TH_STRIP_SELECT,
@@ -234,6 +238,8 @@ typedef enum ThemeColorID {
   TH_DIS_MARKER,
   TH_PATH_BEFORE,
   TH_PATH_AFTER,
+  TH_PATH_KEYFRAME_BEFORE,
+  TH_PATH_KEYFRAME_AFTER,
   TH_CAMERA_PATH,
   TH_LOCK_MARKER,
 
@@ -273,6 +279,7 @@ typedef enum ThemeColorID {
   TH_ICON_OBJECT_DATA,
   TH_ICON_MODIFIER,
   TH_ICON_SHADING,
+  TH_ICON_FOLDER,
   TH_ICON_FUND,
 
   TH_SCROLL_TEXT,
@@ -280,6 +287,7 @@ typedef enum ThemeColorID {
   TH_NLA_TWEAK,       /* 'tweaking' track in NLA */
   TH_NLA_TWEAK_DUPLI, /* error/warning flag for other strips referencing dupli strip */
 
+  TH_NLA_TRACK,
   TH_NLA_TRANSITION,
   TH_NLA_TRANSITION_SEL,
   TH_NLA_META,
@@ -288,7 +296,7 @@ typedef enum ThemeColorID {
   TH_NLA_SOUND_SEL,
 
   TH_WIDGET_EMBOSS,
-
+  TH_WIDGET_TEXT_CURSOR,
   TH_EDITOR_OUTLINE,
 
   TH_AXIS_X, /* X/Y/Z Axis */

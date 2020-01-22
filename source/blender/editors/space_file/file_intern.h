@@ -32,10 +32,6 @@ struct FileSelectParams;
 struct SpaceFile;
 struct View2D;
 
-/* file_ops.c */
-struct ARegion *file_tools_region(struct ScrArea *sa);
-struct ARegion *file_tool_props_region(struct ScrArea *sa);
-
 /* file_draw.c */
 #define TILE_BORDER_X (UI_UNIT_X / 4)
 #define TILE_BORDER_Y (UI_UNIT_Y / 4)
@@ -86,7 +82,6 @@ void FILE_OT_directory_new(struct wmOperatorType *ot);
 void FILE_OT_previous(struct wmOperatorType *ot);
 void FILE_OT_next(struct wmOperatorType *ot);
 void FILE_OT_refresh(struct wmOperatorType *ot);
-void FILE_OT_bookmark_toggle(struct wmOperatorType *ot);
 void FILE_OT_filenum(struct wmOperatorType *ot);
 void FILE_OT_delete(struct wmOperatorType *ot);
 void FILE_OT_rename(struct wmOperatorType *ot);
@@ -112,6 +107,7 @@ void file_sfile_to_operator_ex(bContext *C,
                                struct SpaceFile *sfile,
                                char *filepath);
 void file_sfile_to_operator(bContext *C, struct wmOperator *op, struct SpaceFile *sfile);
+
 void file_operator_to_sfile(bContext *C, struct SpaceFile *sfile, struct wmOperator *op);
 
 /* filesel.c */
@@ -136,7 +132,8 @@ int autocomplete_file(struct bContext *C, char *str, void *arg_v);
 void file_params_renamefile_activate(struct SpaceFile *sfile, struct FileSelectParams *params);
 
 /* file_panels.c */
-void file_panels_register(struct ARegionType *art);
+void file_tool_props_region_panels_register(struct ARegionType *art);
+void file_execute_region_panels_register(struct ARegionType *art);
 
 /* file_utils.c */
 void file_tile_boundbox(const ARegion *ar, FileLayout *layout, const int file, rcti *r_bounds);

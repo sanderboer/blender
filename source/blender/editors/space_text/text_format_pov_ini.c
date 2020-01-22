@@ -49,7 +49,7 @@ static int txtfmt_ini_find_keyword(const char *string)
   /* clang-format off */
 
   /* Language Directives */
-  if      (STR_LITERAL_STARTSWITH(string, "deprecated", len)) { i = len;
+  if        (STR_LITERAL_STARTSWITH(string, "deprecated", len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "statistics", len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "declare",    len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "default",    len)) { i = len;
@@ -91,8 +91,8 @@ static int txtfmt_ini_find_keyword(const char *string)
   } else if (STR_LITERAL_STARTSWITH(string, "P",          len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "T",          len)) { i = len;
 
-  } else {                                                        i = 0;
-}
+  } else                                                        { i = 0;
+  }
 
   /* clang-format on */
 
@@ -111,7 +111,7 @@ static int txtfmt_ini_find_reserved(const char *string)
    * list is from...
    * http://www.povray.org/documentation/view/3.7.0/212/
    */
-  if      (STR_LITERAL_STARTSWITH(string, "RenderCompleteSoundEnabled",   len)) { i = len;
+  if        (STR_LITERAL_STARTSWITH(string, "RenderCompleteSoundEnabled",   len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "Create_Continue_Trace_Log",    len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "ParseErrorSoundEnabled",       len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "RenderErrorSoundEnabled",      len)) { i = len;
@@ -304,8 +304,8 @@ static int txtfmt_ini_find_reserved(const char *string)
   } else if (STR_LITERAL_STARTSWITH(string, "sint32be",                     len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "sint32le",                     len)) { i = len;
 
-  } else {                                                                          i = 0;
-}
+  } else                                                                          { i = 0;
+  }
 
   /* clang-format on */
 
@@ -321,7 +321,7 @@ static int txtfmt_ini_find_bool(const char *string)
   /* clang-format off */
 
   /* Built-in Constants */
-  if      (STR_LITERAL_STARTSWITH(string, "false",   len)) { i = len;
+  if        (STR_LITERAL_STARTSWITH(string, "false",   len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "no",      len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "off",     len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "true",    len)) { i = len;
@@ -335,8 +335,8 @@ static int txtfmt_ini_find_bool(const char *string)
   } else if (STR_LITERAL_STARTSWITH(string, "%k",      len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "%h",      len)) { i = len;
   } else if (STR_LITERAL_STARTSWITH(string, "%w",      len)) { i = len;
-  } else {                                                     i = 0;
-}
+  } else                                                     { i = 0;
+  }
 
   /* clang-format on */
 
@@ -483,7 +483,7 @@ static void txtfmt_pov_ini_format_line(SpaceText *st, TextLine *line, const bool
 
         /* Special vars(v) or built-in keywords(b) */
         /* keep in sync with 'txtfmt_ini_format_identifier()' */
-        if      ((i = txtfmt_ini_find_keyword(str))  != -1) { prev = FMT_TYPE_KEYWORD;
+        if        ((i = txtfmt_ini_find_keyword(str))  != -1) { prev = FMT_TYPE_KEYWORD;
         } else if ((i = txtfmt_ini_find_reserved(str)) != -1) { prev = FMT_TYPE_RESERVED;
 }
 

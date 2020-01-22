@@ -189,12 +189,12 @@ static uiBlock *ui_block_func_POPOVER(bContext *C, uiPopupBlockHandle *handle, v
       /* Prefer popover from header to be positioned into the editor. */
       else if (sa && ar) {
         if (ELEM(ar->regiontype, RGN_TYPE_HEADER, RGN_TYPE_TOOL_HEADER)) {
-          if (ED_area_header_alignment(sa) == RGN_ALIGN_BOTTOM) {
+          if (RGN_ALIGN_ENUM_FROM_MASK(ED_area_header_alignment(sa)) == RGN_ALIGN_BOTTOM) {
             UI_block_direction_set(block, UI_DIR_UP | UI_DIR_CENTER_X);
           }
         }
         if (ar->regiontype == RGN_TYPE_FOOTER) {
-          if (ED_area_footer_alignment(sa) == RGN_ALIGN_BOTTOM) {
+          if (RGN_ALIGN_ENUM_FROM_MASK(ED_area_footer_alignment(sa)) == RGN_ALIGN_BOTTOM) {
             UI_block_direction_set(block, UI_DIR_UP | UI_DIR_CENTER_X);
           }
         }
@@ -334,7 +334,8 @@ int UI_popover_panel_invoke(bContext *C, const char *idname, bool keep_open, Rep
   }
 
   if (block) {
-    UI_block_active_only_flagged_buttons(C, CTX_wm_region(C), block);
+    uiPopupBlockHandle *handle = block->handle;
+    UI_block_active_only_flagged_buttons(C, handle->region, block);
   }
   return OPERATOR_INTERFACE;
 }

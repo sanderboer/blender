@@ -45,16 +45,16 @@
 
 typedef struct SDefAdjacency {
   struct SDefAdjacency *next;
-  unsigned int index;
+  uint index;
 } SDefAdjacency;
 
 typedef struct SDefAdjacencyArray {
   SDefAdjacency *first;
-  unsigned int num; /* Careful, this is twice the number of polygons (avoids an extra loop) */
+  uint num; /* Careful, this is twice the number of polygons (avoids an extra loop) */
 } SDefAdjacencyArray;
 
 typedef struct SDefEdgePolys {
-  unsigned int polys[2], num;
+  uint polys[2], num;
 } SDefEdgePolys;
 
 typedef struct SDefBindCalcData {
@@ -90,20 +90,20 @@ typedef struct SDefBindPoly {
   float point_edgemid_angles[2];
   float corner_edgemid_angles[2];
   float dominant_angle_weight;
-  unsigned int index;
-  unsigned int numverts;
-  unsigned int loopstart;
-  unsigned int edge_inds[2];
-  unsigned int edge_vert_inds[2];
-  unsigned int corner_ind;
-  unsigned int dominant_edge;
+  uint index;
+  uint numverts;
+  uint loopstart;
+  uint edge_inds[2];
+  uint edge_vert_inds[2];
+  uint corner_ind;
+  uint dominant_edge;
   bool inside;
 } SDefBindPoly;
 
 typedef struct SDefBindWeightData {
   SDefBindPoly *bind_polys;
-  unsigned int numpoly;
-  unsigned int numbinds;
+  uint numpoly;
+  uint numbinds;
 } SDefBindWeightData;
 
 typedef struct SDefDeformData {
@@ -217,8 +217,8 @@ static void freeAdjacencyMap(SDefAdjacencyArray *const vert_edges,
 static int buildAdjacencyMap(const MPoly *poly,
                              const MEdge *edge,
                              const MLoop *const mloop,
-                             const unsigned int numpoly,
-                             const unsigned int numedges,
+                             const uint numpoly,
+                             const uint numedges,
                              SDefAdjacencyArray *const vert_edges,
                              SDefAdjacency *adj,
                              SDefEdgePolys *const edge_polys)
@@ -263,10 +263,10 @@ static int buildAdjacencyMap(const MPoly *poly,
   return MOD_SDEF_BIND_RESULT_SUCCESS;
 }
 
-BLI_INLINE void sortPolyVertsEdge(unsigned int *indices,
+BLI_INLINE void sortPolyVertsEdge(uint *indices,
                                   const MLoop *const mloop,
-                                  const unsigned int edge,
-                                  const unsigned int num)
+                                  const uint edge,
+                                  const uint num)
 {
   bool found = false;
 
@@ -287,10 +287,10 @@ BLI_INLINE void sortPolyVertsEdge(unsigned int *indices,
   }
 }
 
-BLI_INLINE void sortPolyVertsTri(unsigned int *indices,
+BLI_INLINE void sortPolyVertsTri(uint *indices,
                                  const MLoop *const mloop,
-                                 const unsigned int loopstart,
-                                 const unsigned int num)
+                                 const uint loopstart,
+                                 const uint num)
 {
   for (int i = loopstart; i < num; i++) {
     *indices = mloop[i].v;
@@ -303,7 +303,7 @@ BLI_INLINE void sortPolyVertsTri(unsigned int *indices,
   }
 }
 
-BLI_INLINE unsigned int nearestVert(SDefBindCalcData *const data, const float point_co[3])
+BLI_INLINE uint nearestVert(SDefBindCalcData *const data, const float point_co[3])
 {
   BVHTreeNearest nearest = {
       .dist_sq = FLT_MAX,
@@ -315,7 +315,7 @@ BLI_INLINE unsigned int nearestVert(SDefBindCalcData *const data, const float po
   float t_point[3];
   float max_dist = FLT_MAX;
   float dist;
-  unsigned int index = 0;
+  uint index = 0;
 
   mul_v3_m4v3(t_point, data->imat, point_co);
 
@@ -346,7 +346,7 @@ BLI_INLINE unsigned int nearestVert(SDefBindCalcData *const data, const float po
   }
 }
 
-BLI_INLINE int isPolyValid(const float coords[][2], const unsigned int nr)
+BLI_INLINE int isPolyValid(const float coords[][2], const uint nr)
 {
   float prev_co[2];
   float curr_vec[2], prev_vec[2];
@@ -408,7 +408,7 @@ BLI_INLINE float computeAngularWeight(const float point_angle, const float edgem
 BLI_INLINE SDefBindWeightData *computeBindWeights(SDefBindCalcData *const data,
                                                   const float point_co[3])
 {
-  const unsigned int nearest = nearestVert(data, point_co);
+  const uint nearest = nearestVert(data, point_co);
   const SDefAdjacency *const vert_edges = data->vert_edges[nearest].first;
   const SDefEdgePolys *const edge_polys = data->edge_polys;
 
@@ -444,7 +444,7 @@ BLI_INLINE SDefBindWeightData *computeBindWeights(SDefBindCalcData *const data,
   /* Loop over all adjacent edges,
    * and build the SDefBindPoly data for each poly adjacent to those. */
   for (vedge = vert_edges; vedge; vedge = vedge->next) {
-    unsigned int edge_ind = vedge->index;
+    uint edge_ind = vedge->index;
 
     for (int i = 0; i < edge_polys[edge_ind].num; i++) {
       {
@@ -603,8 +603,8 @@ BLI_INLINE SDefBindWeightData *computeBindWeights(SDefBindCalcData *const data,
       SDefBindPoly *bpolys[2];
       const SDefEdgePolys *epolys;
       float ang_weights[2];
-      unsigned int edge_ind = vedge->index;
-      unsigned int edge_on_poly[2];
+      uint edge_ind = vedge->index;
+      uint edge_on_poly[2];
 
       epolys = &edge_polys[edge_ind];
 
@@ -979,11 +979,12 @@ static void bindVert(void *__restrict userdata,
   freeBindData(bwdata);
 }
 
-static bool surfacedeformBind(SurfaceDeformModifierData *smd,
+static bool surfacedeformBind(SurfaceDeformModifierData *smd_orig,
+                              SurfaceDeformModifierData *smd_eval,
                               float (*vertexCos)[3],
-                              unsigned int numverts,
-                              unsigned int tnumpoly,
-                              unsigned int tnumverts,
+                              uint numverts,
+                              uint tnumpoly,
+                              uint tnumverts,
                               Mesh *target)
 {
   BVHTreeFromMesh treeData = {NULL};
@@ -991,7 +992,7 @@ static bool surfacedeformBind(SurfaceDeformModifierData *smd,
   const MPoly *mpoly = target->mpoly;
   const MEdge *medge = target->medge;
   const MLoop *mloop = target->mloop;
-  unsigned int tnumedges = target->totedge;
+  uint tnumedges = target->totedge;
   int adj_result;
   SDefAdjacencyArray *vert_edges;
   SDefAdjacency *adj_array;
@@ -999,38 +1000,38 @@ static bool surfacedeformBind(SurfaceDeformModifierData *smd,
 
   vert_edges = MEM_calloc_arrayN(tnumverts, sizeof(*vert_edges), "SDefVertEdgeMap");
   if (vert_edges == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
     return false;
   }
 
   adj_array = MEM_malloc_arrayN(tnumedges, 2 * sizeof(*adj_array), "SDefVertEdge");
   if (adj_array == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
     MEM_freeN(vert_edges);
     return false;
   }
 
   edge_polys = MEM_calloc_arrayN(tnumedges, sizeof(*edge_polys), "SDefEdgeFaceMap");
   if (edge_polys == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
     MEM_freeN(vert_edges);
     MEM_freeN(adj_array);
     return false;
   }
 
-  smd->verts = MEM_malloc_arrayN(numverts, sizeof(*smd->verts), "SDefBindVerts");
-  if (smd->verts == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
+  smd_orig->verts = MEM_malloc_arrayN(numverts, sizeof(*smd_orig->verts), "SDefBindVerts");
+  if (smd_orig->verts == NULL) {
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
     freeAdjacencyMap(vert_edges, adj_array, edge_polys);
     return false;
   }
 
   BKE_bvhtree_from_mesh_get(&treeData, target, BVHTREE_FROM_LOOPTRI, 2);
   if (treeData.tree == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
     freeAdjacencyMap(vert_edges, adj_array, edge_polys);
-    MEM_freeN(smd->verts);
-    smd->verts = NULL;
+    MEM_freeN(smd_orig->verts);
+    smd_orig->verts = NULL;
     return false;
   }
 
@@ -1038,16 +1039,16 @@ static bool surfacedeformBind(SurfaceDeformModifierData *smd,
       mpoly, medge, mloop, tnumpoly, tnumedges, vert_edges, adj_array, edge_polys);
 
   if (adj_result == MOD_SDEF_BIND_RESULT_NONMANY_ERR) {
-    modifier_setError((ModifierData *)smd, "Target has edges with more than two polygons");
+    modifier_setError((ModifierData *)smd_eval, "Target has edges with more than two polygons");
     freeAdjacencyMap(vert_edges, adj_array, edge_polys);
     free_bvhtree_from_mesh(&treeData);
-    MEM_freeN(smd->verts);
-    smd->verts = NULL;
+    MEM_freeN(smd_orig->verts);
+    smd_orig->verts = NULL;
     return false;
   }
 
-  smd->numverts = numverts;
-  smd->numpoly = tnumpoly;
+  smd_orig->numverts = numverts;
+  smd_orig->numpoly = tnumpoly;
 
   SDefBindCalcData data = {
       .treeData = &treeData,
@@ -1058,22 +1059,22 @@ static bool surfacedeformBind(SurfaceDeformModifierData *smd,
       .mloop = mloop,
       .looptri = BKE_mesh_runtime_looptri_ensure(target),
       .targetCos = MEM_malloc_arrayN(tnumverts, sizeof(float[3]), "SDefTargetBindVertArray"),
-      .bind_verts = smd->verts,
+      .bind_verts = smd_orig->verts,
       .vertexCos = vertexCos,
-      .falloff = smd->falloff,
+      .falloff = smd_orig->falloff,
       .success = MOD_SDEF_BIND_RESULT_SUCCESS,
   };
 
   if (data.targetCos == NULL) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
+    freeData((ModifierData *)smd_orig);
     return false;
   }
 
-  invert_m4_m4(data.imat, smd->mat);
+  invert_m4_m4(data.imat, smd_orig->mat);
 
   for (int i = 0; i < tnumverts; i++) {
-    mul_v3_m4v3(data.targetCos[i], smd->mat, mvert[i].co);
+    mul_v3_m4v3(data.targetCos[i], smd_orig->mat, mvert[i].co);
   }
 
   TaskParallelSettings settings;
@@ -1084,28 +1085,28 @@ static bool surfacedeformBind(SurfaceDeformModifierData *smd,
   MEM_freeN(data.targetCos);
 
   if (data.success == MOD_SDEF_BIND_RESULT_MEM_ERR) {
-    modifier_setError((ModifierData *)smd, "Out of memory");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Out of memory");
+    freeData((ModifierData *)smd_orig);
   }
   else if (data.success == MOD_SDEF_BIND_RESULT_NONMANY_ERR) {
-    modifier_setError((ModifierData *)smd, "Target has edges with more than two polygons");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Target has edges with more than two polygons");
+    freeData((ModifierData *)smd_orig);
   }
   else if (data.success == MOD_SDEF_BIND_RESULT_CONCAVE_ERR) {
-    modifier_setError((ModifierData *)smd, "Target contains concave polygons");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Target contains concave polygons");
+    freeData((ModifierData *)smd_orig);
   }
   else if (data.success == MOD_SDEF_BIND_RESULT_OVERLAP_ERR) {
-    modifier_setError((ModifierData *)smd, "Target contains overlapping verts");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Target contains overlapping verts");
+    freeData((ModifierData *)smd_orig);
   }
   else if (data.success == MOD_SDEF_BIND_RESULT_GENERIC_ERR) {
     /* I know this message is vague, but I could not think of a way
      * to explain this with a reasonably sized message.
      * Though it shouldn't really matter all that much,
      * because this is very unlikely to occur */
-    modifier_setError((ModifierData *)smd, "Target contains invalid polygons");
-    freeData((ModifierData *)smd);
+    modifier_setError((ModifierData *)smd_eval, "Target contains invalid polygons");
+    freeData((ModifierData *)smd_orig);
   }
 
   freeAdjacencyMap(vert_edges, adj_array, edge_polys);
@@ -1173,12 +1174,12 @@ static void deformVert(void *__restrict userdata,
 static void surfacedeformModifier_do(ModifierData *md,
                                      const ModifierEvalContext *ctx,
                                      float (*vertexCos)[3],
-                                     unsigned int numverts,
+                                     uint numverts,
                                      Object *ob)
 {
   SurfaceDeformModifierData *smd = (SurfaceDeformModifierData *)md;
   Mesh *target;
-  unsigned int tnumverts, tnumpoly;
+  uint tnumverts, tnumpoly;
 
   /* Exit function if bind flag is not set (free bind data if any). */
   if (!(smd->flags & MOD_SDEF_BIND)) {
@@ -1216,7 +1217,7 @@ static void surfacedeformModifier_do(ModifierData *md,
     invert_m4_m4(tmp_mat, ob->obmat);
     mul_m4_m4m4(smd_orig->mat, tmp_mat, ob_target->obmat);
 
-    if (!surfacedeformBind(smd_orig, vertexCos, numverts, tnumpoly, tnumverts, target)) {
+    if (!surfacedeformBind(smd_orig, smd, vertexCos, numverts, tnumpoly, tnumverts, target)) {
       smd->flags &= ~MOD_SDEF_BIND;
     }
     /* Early abort, this is binding 'call', no need to perform whole evaluation. */

@@ -72,6 +72,7 @@
 #include "ED_screen.h"
 #include "ED_view3d.h"
 #include "ED_gpencil.h"
+#include "ED_object.h"
 
 #include "MEM_guardedalloc.h"
 
@@ -292,6 +293,8 @@ static int object_clear_transform_generic_exec(bContext *C,
                                                void (*clear_func)(Object *, const bool),
                                                const char default_ksName[])
 {
+  Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
+  Main *bmain = CTX_data_main(C);
   Scene *scene = CTX_data_scene(C);
   KeyingSet *ks;
   const bool clear_delta = RNA_boolean_get(op->ptr, "clear_delta");
@@ -304,6 +307,16 @@ static int object_clear_transform_generic_exec(bContext *C,
     return OPERATOR_CANCELLED;
   }
 
+  /* Support transforming the object data. */
+  const bool use_transform_data_origin = (scene->toolsettings->transform_flag &
+                                          SCE_XFORM_DATA_ORIGIN);
+  struct XFormObjectData_Container *xds = NULL;
+
+  if (use_transform_data_origin) {
+    BKE_scene_graph_evaluated_ensure(depsgraph, bmain);
+    xds = ED_object_data_xform_container_create();
+  }
+
   /* get KeyingSet to use */
   ks = ANIM_get_keyingset_for_autokeying(scene, default_ksName);
 
@@ -311,17 +324,28 @@ static int object_clear_transform_generic_exec(bContext *C,
    * (so that object-transform clearing won't be applied at same time as bone-clearing)
    */
   CTX_DATA_BEGIN (C, Object *, ob, selected_editable_objects) {
-    if (!(ob->mode & OB_MODE_WEIGHT_PAINT)) {
-      /* run provided clearing function */
-      clear_func(ob, clear_delta);
-
-      ED_autokeyframe_object(C, scene, ob, ks);
-
-      /* tag for updates */
-      DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM);
+    if (ob->mode & OB_MODE_WEIGHT_PAINT) {
+      continue;
     }
+
+    if (use_transform_data_origin) {
+      ED_object_data_xform_container_item_ensure(xds, ob);
+    }
+
+    /* run provided clearing function */
+    clear_func(ob, clear_delta);
+
+    ED_autokeyframe_object(C, scene, ob, ks);
+
+    /* tag for updates */
+    DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM);
   }
   CTX_DATA_END;
+
+  if (use_transform_data_origin) {
+    ED_object_data_xform_container_update_all(xds, bmain, depsgraph);
+    ED_object_data_xform_container_destroy(xds);
+  }
 
   /* this is needed so children are also updated */
   WM_event_add_notifier(C, NC_OBJECT | ND_TRANSFORM, NULL);
@@ -711,7 +735,7 @@ static int apply_objects_internal(bContext *C,
     return OPERATOR_CANCELLED;
   }
 
-  for (int object_index = 0; object_index < num_objects; ++object_index) {
+  for (int object_index = 0; object_index < num_objects; object_index++) {
     Object *ob = objects[object_index];
 
     /* calculate rotation/scale matrix */
@@ -1086,7 +1110,7 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
   }
 
   /* reset flags */
-  for (int object_index = 0; object_index < num_objects; ++object_index) {
+  for (int object_index = 0; object_index < num_objects; object_index++) {
     Object *ob = objects[object_index];
     ob->flag &= ~OB_DONE;
 
@@ -1106,7 +1130,7 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
     }
   }
 
-  for (int object_index = 0; object_index < num_objects; ++object_index) {
+  for (int object_index = 0; object_index < num_objects; object_index++) {
     Object *ob = objects[object_index];
 
     if ((ob->flag & OB_DONE) == 0) {
@@ -1411,7 +1435,7 @@ static int object_origin_set_exec(bContext *C, wmOperator *op)
         //{
 
         /* use existing context looper */
-        for (int other_object_index = 0; other_object_index < num_objects; ++other_object_index) {
+        for (int other_object_index = 0; other_object_index < num_objects; other_object_index++) {
           Object *ob_other = objects[other_object_index];
 
           if ((ob_other->flag & OB_DONE) == 0 &&
@@ -1550,8 +1574,10 @@ void OBJECT_OT_origin_set(wmOperatorType *ot)
 #define USE_RELATIVE_ROTATION
 /** Disable overlays, ignoring user setting (light wire gets in the way). */
 #define USE_RENDER_OVERRIDE
-/** Calculate a depth if the cursor isn't already over a depth
- * (not essential but feels buggy without). */
+/**
+ * Calculate a depth if the cursor isn't already over a depth
+ * (not essential but feels buggy without).
+ */
 #define USE_FAKE_DEPTH_INIT
 
 struct XFormAxisItem {
@@ -1679,7 +1705,7 @@ static void object_apply_location(Object *ob, const float loc[3])
 }
 
 static void object_orient_to_location(Object *ob,
-                                      float rot_orig[3][3],
+                                      const float rot_orig[3][3],
                                       const float axis[3],
                                       const float location[3])
 {
@@ -1715,8 +1741,9 @@ static void object_transform_axis_target_cancel(bContext *C, wmOperator *op)
 
 static int object_transform_axis_target_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   ViewContext vc;
-  ED_view3d_viewcontext_init(C, &vc);
+  ED_view3d_viewcontext_init(C, &vc, depsgraph);
 
   if (vc.obact == NULL || !object_is_target_compat(vc.obact)) {
     /* Falls back to texture space transform. */

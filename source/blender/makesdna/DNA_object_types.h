@@ -183,7 +183,8 @@ typedef struct Object_Runtime {
   /** Runtime grease pencil evaluated data created by modifiers */
   struct bGPDframe *gpencil_evaluated_frames;
 
-  void *_pad2; /* Padding is here for win32s unconventional struct alignment rules. */
+  unsigned short local_collections_bits;
+  short _pad2[3];
 } Object_Runtime;
 
 typedef struct Object {
@@ -370,7 +371,8 @@ typedef struct Object {
   struct Collection *instance_collection;
 
   /** If fluidsim enabled, store additional settings. */
-  struct FluidsimSettings *fluidsimSettings;
+  struct FluidsimSettings *fluidsimSettings
+      DNA_DEPRECATED;  // XXX deprecated... replaced by mantaflow, keep for readfile
 
   struct DerivedMesh *derivedDeform, *derivedFinal;
 
@@ -608,7 +610,7 @@ enum {
 #define BA_TEMP_TAG (1 << 5)
 
 /**
- * Even if this is is tagged for transform, this flag means it's being locked in place.
+ * Even if this is tagged for transform, this flag means it's being locked in place.
  * Use for #SCE_XFORM_SKIP_CHILDREN.
  */
 #define BA_TRANSFORM_LOCKED_IN_PLACE (1 << 7)

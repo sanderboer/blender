@@ -55,7 +55,6 @@
 #include "BIF_glutil.h"
 
 #include "GPU_immediate.h"
-#include "GPU_draw.h"
 #include "GPU_state.h"
 
 #include "ED_gpencil.h"
@@ -96,7 +95,7 @@ static void annotation_draw_stroke_buffer(const tGPspoint *points,
                                           short thickness,
                                           short dflag,
                                           short sflag,
-                                          float ink[4])
+                                          const float ink[4])
 {
   int draw_points = 0;
 
@@ -1057,7 +1056,7 @@ void ED_annotation_draw_2dimage(const bContext *C)
   int offsx, offsy, sizex, sizey;
   int dflag = GP_DRAWDATA_NOSTATUS;
 
-  bGPdata *gpd = ED_gpencil_data_get_active(C);  // XXX
+  bGPdata *gpd = ED_annotation_data_get_active(C);
   if (gpd == NULL) {
     return;
   }
@@ -1133,7 +1132,7 @@ void ED_annotation_draw_view2d(const bContext *C, bool onlyv2d)
   if (sa == NULL) {
     return;
   }
-  bGPdata *gpd = ED_gpencil_data_get_active(C);  // XXX
+  bGPdata *gpd = ED_annotation_data_get_active(C);
   if (gpd == NULL) {
     return;
   }

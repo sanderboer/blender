@@ -232,11 +232,22 @@ EditBone *ED_armature_ebone_find_shared_parent(EditBone *ebone_child[],
 
 void ED_armature_ebone_to_mat3(EditBone *ebone, float mat[3][3])
 {
-  float delta[3];
+  float delta[3], roll;
 
   /* Find the current bone matrix */
   sub_v3_v3v3(delta, ebone->tail, ebone->head);
-  vec_roll_to_mat3(delta, ebone->roll, mat);
+  roll = ebone->roll;
+  if (!normalize_v3(delta)) {
+    /* Use the orientation of the parent bone if any. */
+    const EditBone *ebone_parent = ebone->parent;
+    if (ebone_parent) {
+      sub_v3_v3v3(delta, ebone_parent->tail, ebone_parent->head);
+      normalize_v3(delta);
+      roll = ebone_parent->roll;
+    }
+  }
+
+  vec_roll_to_mat3_normalized(delta, roll, mat);
 }
 
 void ED_armature_ebone_to_mat4(EditBone *ebone, float mat[4][4])
@@ -491,6 +502,7 @@ static EditBone *make_boneList_rec(ListBase *edbo,
     eBone->parent = parent;
     BLI_strncpy(eBone->name, curBone->name, sizeof(eBone->name));
     eBone->flag = curBone->flag;
+    eBone->inherit_scale_mode = curBone->inherit_scale_mode;
 
     /* fix selection flags */
     if (eBone->flag & BONE_SELECTED) {
@@ -719,6 +731,7 @@ void ED_armature_from_edit(Main *bmain, bArmature *arm)
     newBone->arm_roll = eBone->roll;
 
     newBone->flag = eBone->flag;
+    newBone->inherit_scale_mode = eBone->inherit_scale_mode;
 
     if (eBone == arm->act_edbone) {
       /* don't change active selection, this messes up separate which uses

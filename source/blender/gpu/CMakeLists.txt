@@ -44,7 +44,7 @@ set(INC
 
   ../../../intern/glew-mx
   ../../../intern/guardedalloc
-  ../../../intern/smoke/extern
+  ../../../intern/mantaflow/extern
 )
 
 set(INC_SYS
@@ -61,6 +61,7 @@ set(SRC
   intern/gpu_context.cpp
   intern/gpu_debug.c
   intern/gpu_draw.c
+  intern/gpu_draw_smoke.c
   intern/gpu_element.c
   intern/gpu_extensions.c
   intern/gpu_framebuffer.c
@@ -69,6 +70,7 @@ set(SRC
   intern/gpu_init_exit.c
   intern/gpu_material.c
   intern/gpu_matrix.c
+  intern/gpu_platform.c
   intern/gpu_primitive.c
   intern/gpu_select.c
   intern/gpu_select_pick.c
@@ -101,6 +103,7 @@ set(SRC
   GPU_legacy_stubs.h
   GPU_material.h
   GPU_matrix.h
+  GPU_platform.h
   GPU_primitive.h
   GPU_select.h
   GPU_shader.h
@@ -156,7 +159,6 @@ data_to_c_simple(shaders/gpu_shader_2D_nodelink_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_flat_color_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_line_dashed_uniform_color_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_line_dashed_frag.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_2D_line_dashed_geom.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_smooth_color_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_smooth_color_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_smooth_color_dithered_frag.glsl SRC)
@@ -187,19 +189,7 @@ data_to_c_simple(shaders/gpu_shader_3D_smooth_color_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_3D_passthrough_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_3D_clipped_uniform_color_vert.glsl SRC)
 
-data_to_c_simple(shaders/gpu_shader_instance_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_instance_variying_size_variying_color_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_variying_size_variying_id_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_objectspace_variying_color_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_screenspace_variying_color_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_screen_aligned_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_camera_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_distance_line_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_edges_variying_color_geom.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_instance_edges_variying_color_vert.glsl SRC)
-
-data_to_c_simple(shaders/gpu_shader_3D_groundline_geom.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_3D_groundpoint_vert.glsl SRC)
 
 data_to_c_simple(shaders/gpu_shader_point_uniform_color_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_point_uniform_color_aa_frag.glsl SRC)
@@ -223,10 +213,7 @@ data_to_c_simple(shaders/gpu_shader_2D_edituvs_edges_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_edituvs_faces_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_2D_edituvs_stretch_vert.glsl SRC)
 
-data_to_c_simple(shaders/gpu_shader_text_simple_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_text_simple_geom.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_text_vert.glsl SRC)
-data_to_c_simple(shaders/gpu_shader_text_geom.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_text_frag.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_keyframe_diamond_vert.glsl SRC)
 data_to_c_simple(shaders/gpu_shader_keyframe_diamond_frag.glsl SRC)
@@ -243,7 +230,6 @@ data_to_c_simple(shaders/material/gpu_shader_material_blackbody.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_bright_contrast.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_bump.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_camera.glsl SRC)
-data_to_c_simple(shaders/material/gpu_shader_material_cell_noise.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_clamp.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_color_ramp.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_color_util.glsl SRC)
@@ -314,6 +300,7 @@ data_to_c_simple(shaders/material/gpu_shader_material_vector_curves.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_vector_displacement.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_vector_math.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_velvet.glsl SRC)
+data_to_c_simple(shaders/material/gpu_shader_material_vertex_color.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_volume_absorption.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_volume_info.glsl SRC)
 data_to_c_simple(shaders/material/gpu_shader_material_volume_principled.glsl SRC)
@@ -330,9 +317,11 @@ data_to_c_simple(shaders/gpu_shader_gpencil_fill_frag.glsl SRC)
 
 data_to_c_simple(shaders/gpu_shader_cfg_world_clip_lib.glsl SRC)
 
+data_to_c_simple(shaders/gpu_shader_common_obinfos_lib.glsl SRC)
 
-if(WITH_MOD_SMOKE)
-  add_definitions(-DWITH_SMOKE)
+
+if(WITH_MOD_FLUID)
+  add_definitions(-DWITH_FLUID)
 endif()
 
 add_definitions(${GL_DEFINITIONS})

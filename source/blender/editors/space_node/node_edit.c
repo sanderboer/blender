@@ -204,14 +204,13 @@ static void compo_initjob(void *cjv)
   Scene *scene = cj->scene;
   ViewLayer *view_layer = cj->view_layer;
 
-  cj->compositor_depsgraph = DEG_graph_new(scene, view_layer, DAG_EVAL_RENDER);
+  cj->compositor_depsgraph = DEG_graph_new(bmain, scene, view_layer, DAG_EVAL_RENDER);
   DEG_graph_build_for_compositor_preview(
       cj->compositor_depsgraph, bmain, scene, view_layer, cj->ntree);
 
   /* NOTE: Don't update animation to preserve unkeyed changes, this means can not use
    * evaluate_on_framechange. */
-  DEG_graph_flush_update(bmain, cj->compositor_depsgraph);
-  DEG_evaluate_on_refresh(cj->compositor_depsgraph);
+  DEG_evaluate_on_refresh(bmain, cj->compositor_depsgraph);
 
   bNodeTree *ntree_eval = (bNodeTree *)DEG_get_evaluated_id(cj->compositor_depsgraph,
                                                             &cj->ntree->id);
@@ -2065,7 +2064,7 @@ static int node_clipboard_copy_exec(bContext *C, wmOperator *UNUSED(op))
       /* No ID refcounting, this node is virtual,
        * detached from any actual Blender data currently. */
       bNode *new_node = BKE_node_copy_store_new_pointers(
-          NULL, node, LIB_ID_CREATE_NO_USER_REFCOUNT);
+          NULL, node, LIB_ID_CREATE_NO_USER_REFCOUNT | LIB_ID_CREATE_NO_MAIN);
       BKE_node_clipboard_add_node(new_node);
     }
   }

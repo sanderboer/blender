@@ -158,11 +158,13 @@ CCL_NAMESPACE_END
 /* Nodes */
 
 #include "kernel/svm/svm_noise.h"
-#include "svm_texture.h"
+#include "svm_fractal_noise.h"
 
 #include "kernel/svm/svm_color_util.h"
 #include "kernel/svm/svm_math_util.h"
+#include "kernel/svm/svm_mapping_util.h"
 
+#include "kernel/svm/svm_aov.h"
 #include "kernel/svm/svm_attribute.h"
 #include "kernel/svm/svm_gradient.h"
 #include "kernel/svm/svm_blackbody.h"
@@ -204,6 +206,7 @@ CCL_NAMESPACE_END
 #include "kernel/svm/svm_map_range.h"
 #include "kernel/svm/svm_clamp.h"
 #include "kernel/svm/svm_white_noise.h"
+#include "kernel/svm/svm_vertex_color.h"
 
 #ifdef __SHADER_RAYTRACE__
 #  include "kernel/svm/svm_ao.h"
@@ -212,13 +215,11 @@ CCL_NAMESPACE_END
 
 CCL_NAMESPACE_BEGIN
 
-#define NODES_GROUP(group) ((group) <= __NODES_MAX_GROUP__)
-#define NODES_FEATURE(feature) ((__NODES_FEATURES__ & (feature)) != 0)
-
 /* Main Interpreter Loop */
 ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
                                         ShaderData *sd,
                                         ccl_addr_space PathState *state,
+                                        ccl_global float *buffer,
                                         ShaderType type,
                                         int path_flag)
 {
@@ -288,6 +289,9 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
       case NODE_ATTR:
         svm_node_attr(kg, sd, stack, node);
         break;
+      case NODE_VERTEX_COLOR:
+        svm_node_vertex_color(kg, sd, stack, node.y, node.z, node.w);
+        break;
 #  if NODES_FEATURE(NODE_FEATURE_BUMP)
       case NODE_GEOMETRY_BUMP_DX:
         svm_node_geometry_bump_dx(kg, sd, stack, node.y, node.z);
@@ -307,13 +311,13 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
 #  endif /* NODES_FEATURE(NODE_FEATURE_BUMP) */
 #  ifdef __TEXTURES__
       case NODE_TEX_IMAGE:
-        svm_node_tex_image(kg, sd, stack, node);
+        svm_node_tex_image(kg, sd, stack, node, &offset);
         break;
       case NODE_TEX_IMAGE_BOX:
         svm_node_tex_image_box(kg, sd, stack, node);
         break;
       case NODE_TEX_NOISE:
-        svm_node_tex_noise(kg, sd, stack, node, &offset);
+        svm_node_tex_noise(kg, sd, stack, node.y, node.z, node.w, &offset);
         break;
 #  endif /* __TEXTURES__ */
 #  ifdef __EXTRA_NODES__
@@ -326,6 +330,12 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
         break;
       case NODE_ATTR_BUMP_DY:
         svm_node_attr_bump_dy(kg, sd, stack, node);
+        break;
+      case NODE_VERTEX_COLOR_BUMP_DX:
+        svm_node_vertex_color_bump_dx(kg, sd, stack, node.y, node.z, node.w);
+        break;
+      case NODE_VERTEX_COLOR_BUMP_DY:
+        svm_node_vertex_color_bump_dy(kg, sd, stack, node.y, node.z, node.w);
         break;
       case NODE_TEX_COORD_BUMP_DX:
         svm_node_tex_coord_bump_dx(kg, sd, path_flag, stack, node, &offset);
@@ -405,8 +415,11 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
 #endif       /* NODES_GROUP(NODE_GROUP_LEVEL_1) */
 
 #if NODES_GROUP(NODE_GROUP_LEVEL_2)
+      case NODE_TEXTURE_MAPPING:
+        svm_node_texture_mapping(kg, sd, stack, node.y, node.z, &offset);
+        break;
       case NODE_MAPPING:
-        svm_node_mapping(kg, sd, stack, node.y, node.z, &offset);
+        svm_node_mapping(kg, sd, stack, node.y, node.z, node.w, &offset);
         break;
       case NODE_MIN_MAX:
         svm_node_min_max(kg, sd, stack, node.y, node.z, &offset);
@@ -425,10 +438,10 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
         svm_node_tex_gradient(sd, stack, node);
         break;
       case NODE_TEX_VORONOI:
-        svm_node_tex_voronoi(kg, sd, stack, node, &offset);
+        svm_node_tex_voronoi(kg, sd, stack, node.y, node.z, node.w, &offset);
         break;
       case NODE_TEX_MUSGRAVE:
-        svm_node_tex_musgrave(kg, sd, stack, node, &offset);
+        svm_node_tex_musgrave(kg, sd, stack, node.y, node.z, node.w, &offset);
         break;
       case NODE_TEX_WAVE:
         svm_node_tex_wave(kg, sd, stack, node, &offset);
@@ -455,6 +468,17 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
         break;
       case NODE_IES:
         svm_node_ies(kg, sd, stack, node, &offset);
+        break;
+      case NODE_AOV_START:
+        if (!svm_node_aov_check(state, buffer)) {
+          return;
+        }
+        break;
+      case NODE_AOV_COLOR:
+        svm_node_aov_color(kg, sd, stack, node, buffer);
+        break;
+      case NODE_AOV_VALUE:
+        svm_node_aov_value(kg, sd, stack, node, buffer);
         break;
 #  endif /* __EXTRA_NODES__ */
 #endif   /* NODES_GROUP(NODE_GROUP_LEVEL_2) */
@@ -530,9 +554,6 @@ ccl_device_noinline void svm_eval_nodes(KernelGlobals *kg,
     }
   }
 }
-
-#undef NODES_GROUP
-#undef NODES_FEATURE
 
 CCL_NAMESPACE_END
 

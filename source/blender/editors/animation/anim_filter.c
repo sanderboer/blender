@@ -56,6 +56,7 @@
 #include "DNA_meta_types.h"
 #include "DNA_movieclip_types.h"
 #include "DNA_node_types.h"
+#include "DNA_object_force_types.h"
 #include "DNA_particle_types.h"
 #include "DNA_space_types.h"
 #include "DNA_sequence_types.h"
@@ -1818,7 +1819,7 @@ static size_t animdata_filter_gpencil(bAnimContext *ac,
             !(ads->filterflag & ADS_FILTER_INCL_HIDDEN)) {
           /* Layer visibility - we check both object and base,
            * since these may not be in sync yet. */
-          if ((base->flag & BASE_VISIBLE) == 0) {
+          if ((base->flag & BASE_VISIBLE_DEPSGRAPH) == 0) {
             continue;
           }
 
@@ -2433,8 +2434,9 @@ static size_t animdata_filter_ds_particles(
     ListBase tmp_data = {NULL, NULL};
     size_t tmp_items = 0;
 
-    /* if no material returned, skip - so that we don't get weird blank entries... */
-    if (ELEM(NULL, psys->part, psys->part->adt)) {
+    /* Note that when psys->part->adt is NULL the textures can still be
+     * animated. */
+    if (psys->part == NULL) {
       continue;
     }
 
@@ -2732,6 +2734,12 @@ static size_t animdata_filter_dopesheet_ob(
       tmp_items += animdata_filter_ds_obanim(ac, &tmp_data, ads, ob, filter_mode);
     }
 
+    /* particle deflector textures */
+    if (ob->pd != NULL && ob->pd->tex != NULL && !(ads->filterflag & ADS_FILTER_NOTEX)) {
+      tmp_items += animdata_filter_ds_texture(
+          ac, &tmp_data, ads, ob->pd->tex, &ob->id, filter_mode);
+    }
+
     /* shape-key */
     if ((key && key->adt) && !(ads->filterflag & ADS_FILTER_NOSHAPEKEYS)) {
       tmp_items += animdata_filter_ds_keyanim(ac, &tmp_data, ads, ob, key, filter_mode);
@@ -3017,7 +3025,7 @@ static bool animdata_filter_base_is_ok(bDopeSheet *ads, Base *base, int filter_m
    */
   if ((filter_mode & ANIMFILTER_DATA_VISIBLE) && !(ads->filterflag & ADS_FILTER_INCL_HIDDEN)) {
     /* layer visibility - we check both object and base, since these may not be in sync yet */
-    if ((base->flag & BASE_VISIBLE) == 0) {
+    if ((base->flag & BASE_VISIBLE_DEPSGRAPH) == 0) {
       return false;
     }
 

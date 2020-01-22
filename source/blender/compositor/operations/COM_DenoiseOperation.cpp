@@ -1,6 +1,4 @@
 /*
- * Copyright 2019, Blender Foundation.
- *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
  * as published by the Free Software Foundation; either version 2
@@ -15,8 +13,7 @@
  * along with this program; if not, write to the Free Software Foundation,
  * Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301, USA.
  *
- * Contributor:
- *      Stefan Werner
+ * Copyright 2019, Blender Foundation.
  */
 
 #include "COM_DenoiseOperation.h"
@@ -152,7 +149,7 @@ void DenoiseOperation::generateDenoise(float *data,
 
     /* copy the alpha channel, OpenImageDenoise currently only supports RGB */
     size_t numPixels = inputTileColor->getWidth() * inputTileColor->getHeight();
-    for (size_t i = 0; i < numPixels; ++i) {
+    for (size_t i = 0; i < numPixels; i++) {
       data[i * 4 + 3] = inputBufferColor[i * 4 + 3];
     }
     return;

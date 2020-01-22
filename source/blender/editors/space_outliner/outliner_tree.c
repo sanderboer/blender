@@ -1267,6 +1267,7 @@ static TreeElement *outliner_add_library_contents(Main *mainvar,
   for (a = 0; a < tot; a++) {
     if (lbarray[a] && lbarray[a]->first) {
       ID *id = lbarray[a]->first;
+      const bool is_library = (GS(id->name) == ID_LI) && (lib != NULL);
 
       /* check if there's data in current lib */
       for (; id; id = id->next) {
@@ -1275,7 +1276,9 @@ static TreeElement *outliner_add_library_contents(Main *mainvar,
         }
       }
 
-      if (id) {
+      /* We always want to create an entry for libraries, even if/when we have no more IDs from
+       * them. This invalid state is important to show to user as well.*/
+      if (id != NULL || is_library) {
         if (!tenlib) {
           /* Create library tree element on demand, depending if there are any data-blocks. */
           if (lib) {
@@ -1288,18 +1291,20 @@ static TreeElement *outliner_add_library_contents(Main *mainvar,
         }
 
         /* Create data-block list parent element on demand. */
-        if (filter_id_type) {
-          ten = tenlib;
-        }
-        else {
-          ten = outliner_add_element(soops, &tenlib->subtree, lbarray[a], NULL, TSE_ID_BASE, 0);
-          ten->directdata = lbarray[a];
-          ten->name = outliner_idcode_to_plural(GS(id->name));
-        }
+        if (id != NULL) {
+          if (filter_id_type) {
+            ten = tenlib;
+          }
+          else {
+            ten = outliner_add_element(soops, &tenlib->subtree, lbarray[a], NULL, TSE_ID_BASE, 0);
+            ten->directdata = lbarray[a];
+            ten->name = outliner_idcode_to_plural(GS(id->name));
+          }
 
-        for (id = lbarray[a]->first; id; id = id->next) {
-          if (outliner_library_id_show(lib, id, filter_id_type)) {
-            outliner_add_element(soops, &ten->subtree, id, ten, 0, 0);
+          for (id = lbarray[a]->first; id; id = id->next) {
+            if (outliner_library_id_show(lib, id, filter_id_type)) {
+              outliner_add_element(soops, &ten->subtree, id, ten, 0, 0);
+            }
           }
         }
       }
@@ -1365,7 +1370,7 @@ static void outliner_add_layer_collection_objects(
     TreeElement *te_object = outliner_add_element(soops, tree, base->object, ten, 0, 0);
     te_object->directdata = base;
 
-    if (!(base->flag & BASE_VISIBLE)) {
+    if (!(base->flag & BASE_VISIBLE_DEPSGRAPH)) {
       te_object->flag |= TE_DISABLED;
     }
   }
@@ -1398,7 +1403,7 @@ static void outliner_add_layer_collections_recursive(SpaceOutliner *soops,
         tselem->flag &= ~TSE_CLOSED;
       }
 
-      if (exclude || (lc->runtime_flag & LAYER_COLLECTION_VISIBLE) == 0) {
+      if (exclude || (lc->runtime_flag & LAYER_COLLECTION_VISIBLE_VIEW_LAYER) == 0) {
         ten->flag |= TE_DISABLED;
       }
     }
@@ -2085,12 +2090,12 @@ static bool outliner_element_visible_get(ViewLayer *view_layer,
       }
 
       if (exclude_filter & SO_FILTER_OB_STATE_VISIBLE) {
-        if ((base->flag & BASE_VISIBLE) == 0) {
+        if ((base->flag & BASE_VISIBLE_DEPSGRAPH) == 0) {
           return false;
         }
       }
       else if (exclude_filter & SO_FILTER_OB_STATE_HIDDEN) {
-        if ((base->flag & BASE_VISIBLE) != 0) {
+        if ((base->flag & BASE_VISIBLE_DEPSGRAPH) != 0) {
           return false;
         }
       }
@@ -2186,6 +2191,8 @@ static int outliner_filter_subtree(SpaceOutliner *soops,
     te_next = te->next;
     if ((outliner_element_visible_get(view_layer, te, exclude_filter) == false)) {
       /* Don't free the tree, but extract the children from the parent and add to this tree. */
+      /* This also needs filtering the subtree prior (see T69246). */
+      outliner_filter_subtree(soops, view_layer, &te->subtree, search_string, exclude_filter);
       te_next = outliner_extract_children_from_subtree(te, lb);
       continue;
     }
@@ -2304,9 +2311,8 @@ void outliner_build_tree(
 
     for (lib = mainvar->libraries.first; lib; lib = lib->id.next) {
       ten = outliner_add_library_contents(mainvar, soops, &soops->tree, lib);
-      if (ten) {
-        lib->id.newid = (ID *)ten;
-      }
+      BLI_assert(ten != NULL);
+      lib->id.newid = (ID *)ten;
     }
     /* make hierarchy */
     ten = soops->tree.first;

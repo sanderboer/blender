@@ -54,10 +54,8 @@
 #include "GPU_batch.h"
 #include "GPU_framebuffer.h"
 #include "GPU_immediate.h"
-#include "GPU_immediate_util.h"
 #include "GPU_matrix.h"
 #include "GPU_state.h"
-#include "GPU_draw.h"
 
 #include "ED_image.h"
 #include "ED_mesh.h"
@@ -179,6 +177,7 @@ static void uvedit_get_batches(Object *ob,
                                float *tot_area,
                                float *tot_area_uv)
 {
+  float *tmp_tot_area, *tmp_tot_area_uv;
   int drawfaces = draw_uvs_face_check(scene->toolsettings);
   const bool draw_stretch = (sima->flag & SI_DRAW_STRETCH) != 0;
   const bool draw_faces = (sima->flag & SI_NO_DRAWFACES) == 0;
@@ -195,7 +194,8 @@ static void uvedit_get_batches(Object *ob,
   }
 
   if (draw_stretch && (sima->dt_uvstretch == SI_UVDT_STRETCH_AREA)) {
-    batches->faces = DRW_mesh_batch_cache_get_edituv_faces_stretch_area(ob->data, NULL, NULL);
+    batches->faces = DRW_mesh_batch_cache_get_edituv_faces_stretch_area(
+        ob->data, &tmp_tot_area, &tmp_tot_area_uv);
   }
   else if (draw_stretch) {
     batches->faces = DRW_mesh_batch_cache_get_edituv_faces_stretch_angle(ob->data);
@@ -209,15 +209,15 @@ static void uvedit_get_batches(Object *ob,
 
   DRW_mesh_batch_cache_create_requested(ob, ob->data, scene, false, false);
 
-  /* after create_requested we can load the actual areas */
-  float tmp_tot_area, tmp_tot_area_uv;
-  DRW_mesh_batch_cache_get_edituv_faces_stretch_area(ob->data, &tmp_tot_area, &tmp_tot_area_uv);
-  *tot_area += tmp_tot_area;
-  *tot_area_uv += tmp_tot_area_uv;
+  if (draw_stretch && (sima->dt_uvstretch == SI_UVDT_STRETCH_AREA)) {
+    /* after create_requested we can load the actual areas */
+    *tot_area += *tmp_tot_area;
+    *tot_area_uv += *tmp_tot_area_uv;
+  }
 }
 
 static void draw_uvs_shadow(SpaceImage *UNUSED(sima),
-                            Scene *scene,
+                            const Scene *scene,
                             Object *obedit,
                             Depsgraph *depsgraph)
 {
@@ -237,11 +237,11 @@ static void draw_uvs_shadow(SpaceImage *UNUSED(sima),
   }
 }
 
-static void draw_uvs_texpaint(Scene *scene, Object *ob, Depsgraph *depsgraph)
+static void draw_uvs_texpaint(const Scene *scene, Object *ob, Depsgraph *depsgraph)
 {
   Object *ob_eval = DEG_get_evaluated_object(depsgraph, ob);
   Mesh *me = ob_eval->data;
-  ToolSettings *ts = scene->toolsettings;
+  const ToolSettings *ts = scene->toolsettings;
   float col[4];
   UI_GetThemeColor4fv(TH_UV_SHADOW, col);
 
@@ -296,7 +296,7 @@ static void draw_uvs_texpaint(Scene *scene, Object *ob, Depsgraph *depsgraph)
 
 /* draws uv's in the image space */
 static void draw_uvs(SpaceImage *sima,
-                     Scene *scene,
+                     const Scene *scene,
                      Depsgraph *depsgraph,
                      UVEditGPUBatches *batch,
                      float tot_area_ratio,
@@ -496,7 +496,7 @@ static void draw_uv_shadows_get(
 }
 
 void ED_uvedit_draw_main(SpaceImage *sima,
-                         Scene *scene,
+                         const Scene *scene,
                          ViewLayer *view_layer,
                          Object *obedit,
                          Object *obact,

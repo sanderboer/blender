@@ -32,6 +32,7 @@ struct ListBase;
 struct Main;
 struct Material;
 struct Object;
+struct Scene;
 struct ToolSettings;
 struct bDeformGroup;
 struct bGPDframe;
@@ -58,6 +59,9 @@ struct MDeformVert;
 #define GPENCIL_SIMPLIFY_BLEND(scene, playing) \
   ((GPENCIL_SIMPLIFY_ONPLAY(playing) && (GPENCIL_SIMPLIFY(scene)) && \
     (scene->r.simplify_gpencil & SIMPLIFY_GPENCIL_BLEND)))
+#define GPENCIL_SIMPLIFY_TINT(scene, playing) \
+  ((GPENCIL_SIMPLIFY_ONPLAY(playing) && (GPENCIL_SIMPLIFY(scene)) && \
+    (scene->r.simplify_gpencil & SIMPLIFY_GPENCIL_TINT)))
 
 /* ------------ Grease-Pencil API ------------------ */
 
@@ -121,6 +125,12 @@ struct bGPDstroke *BKE_gpencil_add_stroke(struct bGPDframe *gpf,
                                           int totpoints,
                                           short thickness);
 
+struct bGPDstroke *BKE_gpencil_add_stroke_existing_style(struct bGPDframe *gpf,
+                                                         struct bGPDstroke *existing,
+                                                         int mat_idx,
+                                                         int totpoints,
+                                                         short thickness);
+
 /* Stroke and Fill - Alpha Visibility Threshold */
 #define GPENCIL_ALPHA_OPACITY_THRESH 0.001f
 #define GPENCIL_STRENGTH_MIN 0.003f
@@ -149,7 +159,7 @@ bool BKE_gpencil_layer_delframe(struct bGPDlayer *gpl, struct bGPDframe *gpf);
 struct bGPDlayer *BKE_gpencil_layer_getactive(struct bGPdata *gpd);
 void BKE_gpencil_layer_setactive(struct bGPdata *gpd, struct bGPDlayer *active);
 void BKE_gpencil_layer_delete(struct bGPdata *gpd, struct bGPDlayer *gpl);
-void BKE_gpencil_layer_autolock_set(struct bGPdata *gpd);
+void BKE_gpencil_layer_autolock_set(struct bGPdata *gpd, const bool unlock);
 
 /* Brush */
 struct Material *BKE_gpencil_brush_material_get(struct Brush *brush);
@@ -223,6 +233,7 @@ void BKE_gpencil_stroke_2d_flat_ref(const struct bGPDspoint *ref_points,
                                     float (*points2d)[2],
                                     const float scale,
                                     int *r_direction);
+void BKE_gpencil_triangulate_stroke_fill(struct bGPdata *gpd, struct bGPDstroke *gps);
 
 void BKE_gpencil_transform(struct bGPdata *gpd, float mat[4][4]);
 
@@ -233,6 +244,18 @@ bool BKE_gpencil_smooth_stroke_thickness(struct bGPDstroke *gps, int point_index
 bool BKE_gpencil_smooth_stroke_uv(struct bGPDstroke *gps, int point_index, float influence);
 bool BKE_gpencil_close_stroke(struct bGPDstroke *gps);
 void BKE_gpencil_dissolve_points(struct bGPDframe *gpf, struct bGPDstroke *gps, const short tag);
+
+bool BKE_gpencil_stretch_stroke(struct bGPDstroke *gps, const float dist, const float tip_length);
+bool BKE_gpencil_trim_stroke_points(struct bGPDstroke *gps,
+                                    const int index_from,
+                                    const int index_to);
+bool BKE_gpencil_split_stroke(struct bGPDframe *gpf,
+                              struct bGPDstroke *gps,
+                              const int before_index,
+                              struct bGPDstroke **remaining_gps);
+bool BKE_gpencil_shrink_stroke(struct bGPDstroke *gps, const float dist);
+
+float BKE_gpencil_stroke_length(const struct bGPDstroke *gps, bool use_3d);
 
 void BKE_gpencil_get_range_selected(struct bGPDlayer *gpl, int *r_initframe, int *r_endframe);
 float BKE_gpencil_multiframe_falloff_calc(
