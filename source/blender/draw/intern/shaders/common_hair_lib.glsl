@@ -26,7 +26,7 @@ uniform float hairRadTip = 0.0;
 uniform float hairRadShape = 0.5;
 uniform bool hairCloseTip = true;
 
-uniform mat4 hairDupliMatrix;
+uniform vec4 hairDupliMatrix[4];
 
 /* -- Per control points -- */
 uniform samplerBuffer hairPointBuffer; /* RGBA32F */
@@ -95,7 +95,7 @@ void hair_get_interp_attrs(
  * For final drawing, the vertex index and the number of vertex per segment
  */
 
-#ifndef HAIR_PHASE_SUBDIV
+#if !defined(HAIR_PHASE_SUBDIV) && defined(GPU_VERTEX_SHADER)
 int hair_get_strand_id(void)
 {
   return gl_VertexID / (hairStrandsRes * hairThicknessRes);
@@ -159,8 +159,11 @@ void hair_get_pos_tan_binor_time(bool is_persp,
     wtan = wpos - texelFetch(hairPointBuffer, id - 1).point_position;
   }
 
-  wpos = (hairDupliMatrix * vec4(wpos, 1.0)).xyz;
-  wtan = -normalize(mat3(hairDupliMatrix) * wtan);
+  mat4 obmat = mat4(
+      hairDupliMatrix[0], hairDupliMatrix[1], hairDupliMatrix[2], hairDupliMatrix[3]);
+
+  wpos = (obmat * vec4(wpos, 1.0)).xyz;
+  wtan = -normalize(mat3(obmat) * wtan);
 
   vec3 camera_vec = (is_persp) ? camera_pos - wpos : camera_z;
   wbinor = normalize(cross(camera_vec, wtan));
@@ -203,4 +206,24 @@ vec3 hair_get_strand_pos(void)
   return texelFetch(hairPointBuffer, id).point_position;
 }
 
+vec2 hair_get_barycentric(void)
+{
+  /* To match cycles without breaking into individual segment we encode if we need to invert
+   * the first component into the second component. We invert if the barycentricTexCo.y
+   * is NOT 0.0 or 1.0. */
+  int id = hair_get_base_id();
+  return vec2(float((id % 2) == 1), float(((id % 4) % 3) > 0));
+}
+
 #endif
+
+/* To be fed the result of hair_get_barycentric from vertex shader. */
+vec2 hair_resolve_barycentric(vec2 vert_barycentric)
+{
+  if (fract(vert_barycentric.y) != 0.0) {
+    return vec2(vert_barycentric.x, 0.0);
+  }
+  else {
+    return vec2(1.0 - vert_barycentric.x, 0.0);
+  }
+}

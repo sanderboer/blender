@@ -25,12 +25,12 @@
 #include "dpxlib.h"
 #include "logmemfile.h"
 
-#include <stdio.h>
 #include <math.h>
+#include <stdio.h>
 #include <stdlib.h>
-#include <time.h>
-#include <sys/types.h>
 #include <string.h>
+#include <sys/types.h>
+#include <time.h>
 
 #include "BLI_fileops.h"
 #include "BLI_utildefines.h"
@@ -207,7 +207,7 @@ LogImageFile *dpxOpen(const unsigned char *byteStuff, int fromMemory, size_t buf
 
   dpx->srcFormat = format_DPX;
   dpx->numElements = swap_ushort(header.imageHeader.elements_per_image, dpx->isMSB);
-  size_t max_elements = sizeof(header.imageHeader.element) / sizeof(header.imageHeader.element[0]);
+  size_t max_elements = ARRAY_SIZE(header.imageHeader.element);
   if (dpx->numElements == 0 || dpx->numElements >= max_elements) {
     if (verbose) {
       printf("DPX: Wrong number of elements: %d\n", dpx->numElements);
@@ -277,9 +277,7 @@ LogImageFile *dpxOpen(const unsigned char *byteStuff, int fromMemory, size_t buf
     }
 
     dpx->element[i].bitsPerSample = header.imageHeader.element[i].bits_per_sample;
-    if (dpx->element[i].bitsPerSample != 1 && dpx->element[i].bitsPerSample != 8 &&
-        dpx->element[i].bitsPerSample != 10 && dpx->element[i].bitsPerSample != 12 &&
-        dpx->element[i].bitsPerSample != 16) {
+    if (!ELEM(dpx->element[i].bitsPerSample, 1, 8, 10, 12, 16)) {
       if (verbose) {
         printf("DPX: Unsupported bitsPerSample for elements %d: %d\n",
                i,
@@ -348,8 +346,7 @@ LogImageFile *dpxOpen(const unsigned char *byteStuff, int fromMemory, size_t buf
 
         if (dpx->element[i].refHighQuantity == DPX_UNDEFINED_R32 ||
             isnan(dpx->element[i].refHighQuantity)) {
-          if (dpx->element[i].transfer == transfer_PrintingDensity ||
-              dpx->element[i].transfer == transfer_Logarithmic) {
+          if (ELEM(dpx->element[i].transfer, transfer_PrintingDensity, transfer_Logarithmic)) {
             dpx->element[i].refHighQuantity = 2.048f;
           }
           else {

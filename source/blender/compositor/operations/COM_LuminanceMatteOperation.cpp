@@ -19,16 +19,14 @@
 #include "COM_LuminanceMatteOperation.h"
 #include "BLI_math.h"
 
-extern "C" {
 #include "IMB_colormanagement.h"
-}
 
-LuminanceMatteOperation::LuminanceMatteOperation() : NodeOperation()
+LuminanceMatteOperation::LuminanceMatteOperation()
 {
   addInputSocket(COM_DT_COLOR);
   addOutputSocket(COM_DT_VALUE);
 
-  this->m_inputImageProgram = NULL;
+  this->m_inputImageProgram = nullptr;
 }
 
 void LuminanceMatteOperation::initExecution()
@@ -38,7 +36,7 @@ void LuminanceMatteOperation::initExecution()
 
 void LuminanceMatteOperation::deinitExecution()
 {
-  this->m_inputImageProgram = NULL;
+  this->m_inputImageProgram = nullptr;
 }
 
 void LuminanceMatteOperation::executePixelSampled(float output[4],

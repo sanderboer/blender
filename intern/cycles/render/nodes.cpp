@@ -14,26 +14,29 @@
  * limitations under the License.
  */
 
+#include "render/nodes.h"
 #include "render/colorspace.h"
+#include "render/constant_fold.h"
 #include "render/film.h"
 #include "render/image.h"
+#include "render/image_sky.h"
 #include "render/integrator.h"
 #include "render/light.h"
 #include "render/mesh.h"
-#include "render/nodes.h"
+#include "render/osl.h"
 #include "render/scene.h"
 #include "render/svm.h"
-#include "kernel/svm/svm_color_util.h"
-#include "kernel/svm/svm_ramp_util.h"
-#include "kernel/svm/svm_math_util.h"
-#include "kernel/svm/svm_mapping_util.h"
-#include "render/osl.h"
-#include "render/constant_fold.h"
 
-#include "util/util_sky_model.h"
+#include "sky_model.h"
+
 #include "util/util_foreach.h"
 #include "util/util_logging.h"
 #include "util/util_transform.h"
+
+#include "kernel/svm/svm_color_util.h"
+#include "kernel/svm/svm_mapping_util.h"
+#include "kernel/svm/svm_math_util.h"
+#include "kernel/svm/svm_ramp_util.h"
 
 CCL_NAMESPACE_BEGIN
 
@@ -205,27 +208,6 @@ void TextureMapping::compile(OSLCompiler &compiler)
 
 /* Image Texture */
 
-ImageSlotTextureNode::~ImageSlotTextureNode()
-{
-  if (image_manager) {
-    foreach (int slot, slots) {
-      if (slot != -1) {
-        image_manager->remove_image(slot);
-      }
-    }
-  }
-}
-
-void ImageSlotTextureNode::add_image_user() const
-{
-  /* Increase image user count for new node. */
-  foreach (int slot, slots) {
-    if (slot != -1) {
-      image_manager->add_image_user(slot);
-    }
-  }
-}
-
 NODE_DEFINE(ImageTextureNode)
 {
   NodeType *type = NodeType::add("image_texture", create, NodeType::SHADER);
@@ -265,6 +247,9 @@ NODE_DEFINE(ImageTextureNode)
 
   SOCKET_FLOAT(projection_blend, "Projection Blend", 0.0f);
 
+  SOCKET_INT_ARRAY(tiles, "Tiles", array<int>());
+  SOCKET_BOOLEAN(animated, "Animated", false);
+
   SOCKET_IN_POINT(vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_UV);
 
   SOCKET_OUT_COLOR(color, "Color");
@@ -275,18 +260,27 @@ NODE_DEFINE(ImageTextureNode)
 
 ImageTextureNode::ImageTextureNode() : ImageSlotTextureNode(node_type)
 {
-  is_float = false;
-  compress_as_srgb = false;
   colorspace = u_colorspace_raw;
-  builtin_data = NULL;
   animated = false;
-  tiles.push_back(1001);
+  tiles.push_back_slow(1001);
 }
 
-ShaderNode *ImageTextureNode::clone() const
+ShaderNode *ImageTextureNode::clone(ShaderGraph *graph) const
 {
-  add_image_user();
-  return new ImageTextureNode(*this);
+  ImageTextureNode *node = graph->create_node<ImageTextureNode>(*this);
+  node->handle = handle;
+  return node;
+}
+
+ImageParams ImageTextureNode::image_params() const
+{
+  ImageParams params;
+  params.animated = animated;
+  params.interpolation = interpolation;
+  params.extension = extension;
+  params.alpha_type = alpha_type;
+  params.colorspace = colorspace;
+  return params;
 }
 
 void ImageTextureNode::cull_tiles(Scene *scene, ShaderGraph *graph)
@@ -295,7 +289,7 @@ void ImageTextureNode::cull_tiles(Scene *scene, ShaderGraph *graph)
    * 1001 tile, so there's no point in loading any others. */
   if (projection == NODE_IMAGE_PROJ_BOX) {
     tiles.clear();
-    tiles.push_back(1001);
+    tiles.push_back_slow(1001);
     return;
   }
 
@@ -317,7 +311,7 @@ void ImageTextureNode::cull_tiles(Scene *scene, ShaderGraph *graph)
     ShaderNode *node = vector_in->link->parent;
     if (node->type == UVMapNode::node_type) {
       UVMapNode *uvmap = (UVMapNode *)node;
-      attribute = uvmap->attribute;
+      attribute = uvmap->get_attribute();
     }
     else if (node->type == TextureCoordinateNode::node_type) {
       if (vector_in->link != node->output("UV")) {
@@ -333,21 +327,22 @@ void ImageTextureNode::cull_tiles(Scene *scene, ShaderGraph *graph)
   /* TODO(lukas): This is quite inefficient. A fairly simple improvement would
    * be to have a cache in each mesh that is indexed by attribute.
    * Additionally, building a graph-to-meshes list once could help. */
-  foreach (Mesh *mesh, scene->meshes) {
-    foreach (Shader *shader, mesh->used_shaders) {
+  foreach (Geometry *geom, scene->geometry) {
+    foreach (Node *node, geom->get_used_shaders()) {
+      Shader *shader = static_cast<Shader *>(node);
       if (shader->graph == graph) {
-        mesh->get_uv_tiles(attribute, used_tiles);
+        geom->get_uv_tiles(attribute, used_tiles);
       }
     }
   }
 
-  ccl::vector<int> new_tiles;
+  array<int> new_tiles;
   foreach (int tile, tiles) {
     if (used_tiles.count(tile)) {
-      new_tiles.push_back(tile);
+      new_tiles.push_back_slow(tile);
     }
   }
-  tiles.swap(new_tiles);
+  tiles.steal_data(new_tiles);
 }
 
 void ImageTextureNode::attributes(Shader *shader, AttributeRequestSet *attributes)
@@ -371,123 +366,80 @@ void ImageTextureNode::compile(SVMCompiler &compiler)
   ShaderOutput *color_out = output("Color");
   ShaderOutput *alpha_out = output("Alpha");
 
-  image_manager = compiler.scene->image_manager;
-  if (slots.empty()) {
+  if (handle.empty()) {
     cull_tiles(compiler.scene, compiler.current_graph);
-    slots.reserve(tiles.size());
+    ImageManager *image_manager = compiler.scene->image_manager;
+    handle = image_manager->add_image(filename.string(), image_params(), tiles);
+  }
 
-    bool have_metadata = false;
-    foreach (int tile, tiles) {
-      string tile_name = filename.string();
-      string_replace(tile_name, "<UDIM>", string_printf("%04d", tile));
+  /* All tiles have the same metadata. */
+  const ImageMetaData metadata = handle.metadata();
+  const bool compress_as_srgb = metadata.compress_as_srgb;
+  const ustring known_colorspace = metadata.colorspace;
 
-      ImageMetaData metadata;
-      int slot = image_manager->add_image(tile_name,
-                                          builtin_data,
-                                          animated,
-                                          0,
-                                          interpolation,
-                                          extension,
-                                          alpha_type,
-                                          colorspace,
-                                          metadata);
-      slots.push_back(slot);
+  int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
+  uint flags = 0;
 
-      /* We assume that all tiles have the same metadata. */
-      if (!have_metadata) {
-        is_float = metadata.is_float;
-        compress_as_srgb = metadata.compress_as_srgb;
-        known_colorspace = metadata.colorspace;
-        have_metadata = true;
-      }
+  if (compress_as_srgb) {
+    flags |= NODE_IMAGE_COMPRESS_AS_SRGB;
+  }
+  if (!alpha_out->links.empty()) {
+    const bool unassociate_alpha = !(ColorSpaceManager::colorspace_is_data(colorspace) ||
+                                     alpha_type == IMAGE_ALPHA_CHANNEL_PACKED ||
+                                     alpha_type == IMAGE_ALPHA_IGNORE);
+
+    if (unassociate_alpha) {
+      flags |= NODE_IMAGE_ALPHA_UNASSOCIATE;
     }
   }
 
-  bool has_image = false;
-  foreach (int slot, slots) {
-    if (slot != -1) {
-      has_image = true;
-      break;
-    }
-  }
-
-  if (has_image) {
-    int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
-    uint flags = 0;
-
-    if (compress_as_srgb) {
-      flags |= NODE_IMAGE_COMPRESS_AS_SRGB;
-    }
-    if (!alpha_out->links.empty()) {
-      const bool unassociate_alpha = !(ColorSpaceManager::colorspace_is_data(colorspace) ||
-                                       alpha_type == IMAGE_ALPHA_CHANNEL_PACKED ||
-                                       alpha_type == IMAGE_ALPHA_IGNORE);
-
-      if (unassociate_alpha) {
-        flags |= NODE_IMAGE_ALPHA_UNASSOCIATE;
-      }
-    }
-
-    if (projection != NODE_IMAGE_PROJ_BOX) {
-      /* If there only is one image (a very common case), we encode it as a negative value. */
-      int num_nodes;
-      if (slots.size() == 1) {
-        num_nodes = -slots[0];
-      }
-      else {
-        num_nodes = divide_up(slots.size(), 2);
-      }
-
-      compiler.add_node(NODE_TEX_IMAGE,
-                        num_nodes,
-                        compiler.encode_uchar4(vector_offset,
-                                               compiler.stack_assign_if_linked(color_out),
-                                               compiler.stack_assign_if_linked(alpha_out),
-                                               flags),
-                        projection);
-
-      if (num_nodes > 0) {
-        for (int i = 0; i < num_nodes; i++) {
-          int4 node;
-          node.x = tiles[2 * i];
-          node.y = slots[2 * i];
-          if (2 * i + 1 < slots.size()) {
-            node.z = tiles[2 * i + 1];
-            node.w = slots[2 * i + 1];
-          }
-          else {
-            node.z = -1;
-            node.w = -1;
-          }
-          compiler.add_node(node.x, node.y, node.z, node.w);
-        }
-      }
+  if (projection != NODE_IMAGE_PROJ_BOX) {
+    /* If there only is one image (a very common case), we encode it as a negative value. */
+    int num_nodes;
+    if (handle.num_tiles() == 1) {
+      num_nodes = -handle.svm_slot();
     }
     else {
-      assert(slots.size() == 1);
-      compiler.add_node(NODE_TEX_IMAGE_BOX,
-                        slots[0],
-                        compiler.encode_uchar4(vector_offset,
-                                               compiler.stack_assign_if_linked(color_out),
-                                               compiler.stack_assign_if_linked(alpha_out),
-                                               flags),
-                        __float_as_int(projection_blend));
+      num_nodes = divide_up(handle.num_tiles(), 2);
     }
 
-    tex_mapping.compile_end(compiler, vector_in, vector_offset);
+    compiler.add_node(NODE_TEX_IMAGE,
+                      num_nodes,
+                      compiler.encode_uchar4(vector_offset,
+                                             compiler.stack_assign_if_linked(color_out),
+                                             compiler.stack_assign_if_linked(alpha_out),
+                                             flags),
+                      projection);
+
+    if (num_nodes > 0) {
+      for (int i = 0; i < num_nodes; i++) {
+        int4 node;
+        node.x = tiles[2 * i];
+        node.y = handle.svm_slot(2 * i);
+        if (2 * i + 1 < tiles.size()) {
+          node.z = tiles[2 * i + 1];
+          node.w = handle.svm_slot(2 * i + 1);
+        }
+        else {
+          node.z = -1;
+          node.w = -1;
+        }
+        compiler.add_node(node.x, node.y, node.z, node.w);
+      }
+    }
   }
   else {
-    /* image not found */
-    if (!color_out->links.empty()) {
-      compiler.add_node(NODE_VALUE_V, compiler.stack_assign(color_out));
-      compiler.add_node(
-          NODE_VALUE_V,
-          make_float3(TEX_IMAGE_MISSING_R, TEX_IMAGE_MISSING_G, TEX_IMAGE_MISSING_B));
-    }
-    if (!alpha_out->links.empty())
-      compiler.add_node(
-          NODE_VALUE_F, __float_as_int(TEX_IMAGE_MISSING_A), compiler.stack_assign(alpha_out));
+    assert(handle.num_tiles() == 1);
+    compiler.add_node(NODE_TEX_IMAGE_BOX,
+                      handle.svm_slot(),
+                      compiler.encode_uchar4(vector_offset,
+                                             compiler.stack_assign_if_linked(color_out),
+                                             compiler.stack_assign_if_linked(alpha_out),
+                                             flags),
+                      __float_as_int(projection_blend));
   }
+
+  tex_mapping.compile_end(compiler, vector_in, vector_offset);
 }
 
 void ImageTextureNode::compile(OSLCompiler &compiler)
@@ -496,38 +448,22 @@ void ImageTextureNode::compile(OSLCompiler &compiler)
 
   tex_mapping.compile(compiler);
 
-  image_manager = compiler.scene->image_manager;
-  if (slots.size() == 0) {
-    ImageMetaData metadata;
-    if (builtin_data == NULL) {
-      string tile_name = filename.string();
-      string_replace(tile_name, "<UDIM>", "1001");
-      image_manager->get_image_metadata(tile_name, NULL, colorspace, metadata);
-      slots.push_back(-1);
-    }
-    else {
-      int slot = image_manager->add_image(filename.string(),
-                                          builtin_data,
-                                          animated,
-                                          0,
-                                          interpolation,
-                                          extension,
-                                          alpha_type,
-                                          colorspace,
-                                          metadata);
-      slots.push_back(slot);
-    }
-    is_float = metadata.is_float;
-    compress_as_srgb = metadata.compress_as_srgb;
-    known_colorspace = metadata.colorspace;
+  if (handle.empty()) {
+    ImageManager *image_manager = compiler.scene->image_manager;
+    handle = image_manager->add_image(filename.string(), image_params());
   }
 
-  if (slots[0] == -1) {
+  const ImageMetaData metadata = handle.metadata();
+  const bool is_float = metadata.is_float();
+  const bool compress_as_srgb = metadata.compress_as_srgb;
+  const ustring known_colorspace = metadata.colorspace;
+
+  if (handle.svm_slot() == -1) {
     compiler.parameter_texture(
         "filename", filename, compress_as_srgb ? u_colorspace_raw : known_colorspace);
   }
   else {
-    compiler.parameter_texture("filename", slots[0]);
+    compiler.parameter_texture("filename", handle.svm_slot());
   }
 
   const bool unassociate_alpha = !(ColorSpaceManager::colorspace_is_data(colorspace) ||
@@ -579,6 +515,8 @@ NODE_DEFINE(EnvironmentTextureNode)
   projection_enum.insert("mirror_ball", NODE_ENVIRONMENT_MIRROR_BALL);
   SOCKET_ENUM(projection, "Projection", projection_enum, NODE_ENVIRONMENT_EQUIRECTANGULAR);
 
+  SOCKET_BOOLEAN(animated, "Animated", false);
+
   SOCKET_IN_POINT(vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_POSITION);
 
   SOCKET_OUT_COLOR(color, "Color");
@@ -589,17 +527,26 @@ NODE_DEFINE(EnvironmentTextureNode)
 
 EnvironmentTextureNode::EnvironmentTextureNode() : ImageSlotTextureNode(node_type)
 {
-  is_float = false;
-  compress_as_srgb = false;
   colorspace = u_colorspace_raw;
-  builtin_data = NULL;
   animated = false;
 }
 
-ShaderNode *EnvironmentTextureNode::clone() const
+ShaderNode *EnvironmentTextureNode::clone(ShaderGraph *graph) const
 {
-  add_image_user();
-  return new EnvironmentTextureNode(*this);
+  EnvironmentTextureNode *node = graph->create_node<EnvironmentTextureNode>(*this);
+  node->handle = handle;
+  return node;
+}
+
+ImageParams EnvironmentTextureNode::image_params() const
+{
+  ImageParams params;
+  params.animated = animated;
+  params.interpolation = interpolation;
+  params.extension = EXTENSION_REPEAT;
+  params.alpha_type = alpha_type;
+  params.colorspace = colorspace;
+  return params;
 }
 
 void EnvironmentTextureNode::attributes(Shader *shader, AttributeRequestSet *attributes)
@@ -621,93 +568,53 @@ void EnvironmentTextureNode::compile(SVMCompiler &compiler)
   ShaderOutput *color_out = output("Color");
   ShaderOutput *alpha_out = output("Alpha");
 
-  image_manager = compiler.scene->image_manager;
-  if (slots.empty()) {
-    ImageMetaData metadata;
-    int slot = image_manager->add_image(filename.string(),
-                                        builtin_data,
-                                        animated,
-                                        0,
-                                        interpolation,
-                                        EXTENSION_REPEAT,
-                                        alpha_type,
-                                        colorspace,
-                                        metadata);
-    slots.push_back(slot);
-    is_float = metadata.is_float;
-    compress_as_srgb = metadata.compress_as_srgb;
-    known_colorspace = metadata.colorspace;
+  if (handle.empty()) {
+    ImageManager *image_manager = compiler.scene->image_manager;
+    handle = image_manager->add_image(filename.string(), image_params());
   }
 
-  if (slots[0] != -1) {
-    int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
-    uint flags = 0;
+  const ImageMetaData metadata = handle.metadata();
+  const bool compress_as_srgb = metadata.compress_as_srgb;
+  const ustring known_colorspace = metadata.colorspace;
 
-    if (compress_as_srgb) {
-      flags |= NODE_IMAGE_COMPRESS_AS_SRGB;
-    }
+  int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
+  uint flags = 0;
 
-    compiler.add_node(NODE_TEX_ENVIRONMENT,
-                      slots[0],
-                      compiler.encode_uchar4(vector_offset,
-                                             compiler.stack_assign_if_linked(color_out),
-                                             compiler.stack_assign_if_linked(alpha_out),
-                                             flags),
-                      projection);
-
-    tex_mapping.compile_end(compiler, vector_in, vector_offset);
+  if (compress_as_srgb) {
+    flags |= NODE_IMAGE_COMPRESS_AS_SRGB;
   }
-  else {
-    /* image not found */
-    if (!color_out->links.empty()) {
-      compiler.add_node(NODE_VALUE_V, compiler.stack_assign(color_out));
-      compiler.add_node(
-          NODE_VALUE_V,
-          make_float3(TEX_IMAGE_MISSING_R, TEX_IMAGE_MISSING_G, TEX_IMAGE_MISSING_B));
-    }
-    if (!alpha_out->links.empty())
-      compiler.add_node(
-          NODE_VALUE_F, __float_as_int(TEX_IMAGE_MISSING_A), compiler.stack_assign(alpha_out));
-  }
+
+  compiler.add_node(NODE_TEX_ENVIRONMENT,
+                    handle.svm_slot(),
+                    compiler.encode_uchar4(vector_offset,
+                                           compiler.stack_assign_if_linked(color_out),
+                                           compiler.stack_assign_if_linked(alpha_out),
+                                           flags),
+                    projection);
+
+  tex_mapping.compile_end(compiler, vector_in, vector_offset);
 }
 
 void EnvironmentTextureNode::compile(OSLCompiler &compiler)
 {
-  tex_mapping.compile(compiler);
-
-  /* See comments in ImageTextureNode::compile about support
-   * of builtin images.
-   */
-  image_manager = compiler.scene->image_manager;
-  if (slots.empty()) {
-    ImageMetaData metadata;
-    if (builtin_data == NULL) {
-      image_manager->get_image_metadata(filename.string(), NULL, colorspace, metadata);
-      slots.push_back(-1);
-    }
-    else {
-      int slot = image_manager->add_image(filename.string(),
-                                          builtin_data,
-                                          animated,
-                                          0,
-                                          interpolation,
-                                          EXTENSION_REPEAT,
-                                          alpha_type,
-                                          colorspace,
-                                          metadata);
-      slots.push_back(slot);
-    }
-    is_float = metadata.is_float;
-    compress_as_srgb = metadata.compress_as_srgb;
-    known_colorspace = metadata.colorspace;
+  if (handle.empty()) {
+    ImageManager *image_manager = compiler.scene->image_manager;
+    handle = image_manager->add_image(filename.string(), image_params());
   }
 
-  if (slots[0] == -1) {
+  tex_mapping.compile(compiler);
+
+  const ImageMetaData metadata = handle.metadata();
+  const bool is_float = metadata.is_float();
+  const bool compress_as_srgb = metadata.compress_as_srgb;
+  const ustring known_colorspace = metadata.colorspace;
+
+  if (handle.svm_slot() == -1) {
     compiler.parameter_texture(
         "filename", filename, compress_as_srgb ? u_colorspace_raw : known_colorspace);
   }
   else {
-    compiler.parameter_texture("filename", slots[0]);
+    compiler.parameter_texture("filename", handle.svm_slot());
   }
 
   compiler.parameter(this, "projection");
@@ -731,7 +638,7 @@ typedef struct SunSky {
 
   /* Parameter */
   float radiance_x, radiance_y, radiance_z;
-  float config_x[9], config_y[9], config_z[9];
+  float config_x[9], config_y[9], config_z[9], nishita_data[10];
 } SunSky;
 
 /* Preetham model */
@@ -741,7 +648,7 @@ static float sky_perez_function(float lam[6], float theta, float gamma)
          (1.0f + lam[2] * expf(lam[3] * gamma) + lam[4] * cosf(gamma) * cosf(gamma));
 }
 
-static void sky_texture_precompute_old(SunSky *sunsky, float3 dir, float turbidity)
+static void sky_texture_precompute_preetham(SunSky *sunsky, float3 dir, float turbidity)
 {
   /*
    * We re-use the SunSky struct of the new model, to avoid extra variables
@@ -804,10 +711,10 @@ static void sky_texture_precompute_old(SunSky *sunsky, float3 dir, float turbidi
 }
 
 /* Hosek / Wilkie */
-static void sky_texture_precompute_new(SunSky *sunsky,
-                                       float3 dir,
-                                       float turbidity,
-                                       float ground_albedo)
+static void sky_texture_precompute_hosek(SunSky *sunsky,
+                                         float3 dir,
+                                         float turbidity,
+                                         float ground_albedo)
 {
   /* Calculate Sun Direction and save coordinates */
   float2 spherical = sky_spherical_coordinates(dir);
@@ -826,8 +733,8 @@ static void sky_texture_precompute_new(SunSky *sunsky,
   float solarElevation = M_PI_2_F - theta;
 
   /* Initialize Sky Model */
-  ArHosekSkyModelState *sky_state;
-  sky_state = arhosek_xyz_skymodelstate_alloc_init(
+  SKY_ArHosekSkyModelState *sky_state;
+  sky_state = SKY_arhosek_xyz_skymodelstate_alloc_init(
       (double)turbidity, (double)ground_albedo, (double)solarElevation);
 
   /* Copy values from sky_state to SunSky */
@@ -841,7 +748,42 @@ static void sky_texture_precompute_new(SunSky *sunsky,
   sunsky->radiance_z = (float)sky_state->radiances[2];
 
   /* Free sky_state */
-  arhosekskymodelstate_free(sky_state);
+  SKY_arhosekskymodelstate_free(sky_state);
+}
+
+/* Nishita improved */
+static void sky_texture_precompute_nishita(SunSky *sunsky,
+                                           bool sun_disc,
+                                           float sun_size,
+                                           float sun_intensity,
+                                           float sun_elevation,
+                                           float sun_rotation,
+                                           float altitude,
+                                           float air_density,
+                                           float dust_density)
+{
+  /* sample 2 sun pixels */
+  float pixel_bottom[3];
+  float pixel_top[3];
+  SKY_nishita_skymodel_precompute_sun(
+      sun_elevation, sun_size, altitude, air_density, dust_density, pixel_bottom, pixel_top);
+  /* limit sun rotation between 0 and 360 degrees */
+  sun_rotation = fmodf(sun_rotation, M_2PI_F);
+  if (sun_rotation < 0.0f) {
+    sun_rotation += M_2PI_F;
+  }
+  sun_rotation = M_2PI_F - sun_rotation;
+  /* send data to svm_sky */
+  sunsky->nishita_data[0] = pixel_bottom[0];
+  sunsky->nishita_data[1] = pixel_bottom[1];
+  sunsky->nishita_data[2] = pixel_bottom[2];
+  sunsky->nishita_data[3] = pixel_top[0];
+  sunsky->nishita_data[4] = pixel_top[1];
+  sunsky->nishita_data[5] = pixel_top[2];
+  sunsky->nishita_data[6] = sun_elevation;
+  sunsky->nishita_data[7] = sun_rotation;
+  sunsky->nishita_data[8] = sun_disc ? sun_size : -1.0f;
+  sunsky->nishita_data[9] = sun_intensity;
 }
 
 NODE_DEFINE(SkyTextureNode)
@@ -851,13 +793,23 @@ NODE_DEFINE(SkyTextureNode)
   TEXTURE_MAPPING_DEFINE(SkyTextureNode);
 
   static NodeEnum type_enum;
-  type_enum.insert("preetham", NODE_SKY_OLD);
-  type_enum.insert("hosek_wilkie", NODE_SKY_NEW);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_SKY_NEW);
+  type_enum.insert("preetham", NODE_SKY_PREETHAM);
+  type_enum.insert("hosek_wilkie", NODE_SKY_HOSEK);
+  type_enum.insert("nishita_improved", NODE_SKY_NISHITA);
+  SOCKET_ENUM(sky_type, "Type", type_enum, NODE_SKY_NISHITA);
 
   SOCKET_VECTOR(sun_direction, "Sun Direction", make_float3(0.0f, 0.0f, 1.0f));
   SOCKET_FLOAT(turbidity, "Turbidity", 2.2f);
   SOCKET_FLOAT(ground_albedo, "Ground Albedo", 0.3f);
+  SOCKET_BOOLEAN(sun_disc, "Sun Disc", true);
+  SOCKET_FLOAT(sun_size, "Sun Size", 0.009512f);
+  SOCKET_FLOAT(sun_intensity, "Sun Intensity", 1.0f);
+  SOCKET_FLOAT(sun_elevation, "Sun Elevation", 15.0f * M_PI_F / 180.0f);
+  SOCKET_FLOAT(sun_rotation, "Sun Rotation", 0.0f);
+  SOCKET_FLOAT(altitude, "Altitude", 1.0f);
+  SOCKET_FLOAT(air_density, "Air", 1.0f);
+  SOCKET_FLOAT(dust_density, "Dust", 1.0f);
+  SOCKET_FLOAT(ozone_density, "Ozone", 1.0f);
 
   SOCKET_IN_POINT(
       vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_GENERATED);
@@ -877,49 +829,93 @@ void SkyTextureNode::compile(SVMCompiler &compiler)
   ShaderOutput *color_out = output("Color");
 
   SunSky sunsky;
-  if (type == NODE_SKY_OLD)
-    sky_texture_precompute_old(&sunsky, sun_direction, turbidity);
-  else if (type == NODE_SKY_NEW)
-    sky_texture_precompute_new(&sunsky, sun_direction, turbidity, ground_albedo);
+  if (sky_type == NODE_SKY_PREETHAM)
+    sky_texture_precompute_preetham(&sunsky, sun_direction, turbidity);
+  else if (sky_type == NODE_SKY_HOSEK)
+    sky_texture_precompute_hosek(&sunsky, sun_direction, turbidity, ground_albedo);
+  else if (sky_type == NODE_SKY_NISHITA) {
+    /* Clamp altitude to reasonable values.
+     * Below 1m causes numerical issues and above 60km is space. */
+    float clamped_altitude = clamp(altitude, 1.0f, 59999.0f);
+
+    sky_texture_precompute_nishita(&sunsky,
+                                   sun_disc,
+                                   get_sun_size(),
+                                   sun_intensity,
+                                   sun_elevation,
+                                   sun_rotation,
+                                   clamped_altitude,
+                                   air_density,
+                                   dust_density);
+    /* precomputed texture image parameters */
+    ImageManager *image_manager = compiler.scene->image_manager;
+    ImageParams impar;
+    impar.interpolation = INTERPOLATION_LINEAR;
+    impar.extension = EXTENSION_EXTEND;
+
+    /* precompute sky texture */
+    if (handle.empty()) {
+      SkyLoader *loader = new SkyLoader(
+          sun_elevation, clamped_altitude, air_density, dust_density, ozone_density);
+      handle = image_manager->add_image(loader, impar);
+    }
+  }
   else
     assert(false);
 
   int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
 
   compiler.stack_assign(color_out);
-  compiler.add_node(NODE_TEX_SKY, vector_offset, compiler.stack_assign(color_out), type);
-  compiler.add_node(__float_as_uint(sunsky.phi),
-                    __float_as_uint(sunsky.theta),
-                    __float_as_uint(sunsky.radiance_x),
-                    __float_as_uint(sunsky.radiance_y));
-  compiler.add_node(__float_as_uint(sunsky.radiance_z),
-                    __float_as_uint(sunsky.config_x[0]),
-                    __float_as_uint(sunsky.config_x[1]),
-                    __float_as_uint(sunsky.config_x[2]));
-  compiler.add_node(__float_as_uint(sunsky.config_x[3]),
-                    __float_as_uint(sunsky.config_x[4]),
-                    __float_as_uint(sunsky.config_x[5]),
-                    __float_as_uint(sunsky.config_x[6]));
-  compiler.add_node(__float_as_uint(sunsky.config_x[7]),
-                    __float_as_uint(sunsky.config_x[8]),
-                    __float_as_uint(sunsky.config_y[0]),
-                    __float_as_uint(sunsky.config_y[1]));
-  compiler.add_node(__float_as_uint(sunsky.config_y[2]),
-                    __float_as_uint(sunsky.config_y[3]),
-                    __float_as_uint(sunsky.config_y[4]),
-                    __float_as_uint(sunsky.config_y[5]));
-  compiler.add_node(__float_as_uint(sunsky.config_y[6]),
-                    __float_as_uint(sunsky.config_y[7]),
-                    __float_as_uint(sunsky.config_y[8]),
-                    __float_as_uint(sunsky.config_z[0]));
-  compiler.add_node(__float_as_uint(sunsky.config_z[1]),
-                    __float_as_uint(sunsky.config_z[2]),
-                    __float_as_uint(sunsky.config_z[3]),
-                    __float_as_uint(sunsky.config_z[4]));
-  compiler.add_node(__float_as_uint(sunsky.config_z[5]),
-                    __float_as_uint(sunsky.config_z[6]),
-                    __float_as_uint(sunsky.config_z[7]),
-                    __float_as_uint(sunsky.config_z[8]));
+  compiler.add_node(NODE_TEX_SKY, vector_offset, compiler.stack_assign(color_out), sky_type);
+  /* nishita doesn't need this data */
+  if (sky_type != NODE_SKY_NISHITA) {
+    compiler.add_node(__float_as_uint(sunsky.phi),
+                      __float_as_uint(sunsky.theta),
+                      __float_as_uint(sunsky.radiance_x),
+                      __float_as_uint(sunsky.radiance_y));
+    compiler.add_node(__float_as_uint(sunsky.radiance_z),
+                      __float_as_uint(sunsky.config_x[0]),
+                      __float_as_uint(sunsky.config_x[1]),
+                      __float_as_uint(sunsky.config_x[2]));
+    compiler.add_node(__float_as_uint(sunsky.config_x[3]),
+                      __float_as_uint(sunsky.config_x[4]),
+                      __float_as_uint(sunsky.config_x[5]),
+                      __float_as_uint(sunsky.config_x[6]));
+    compiler.add_node(__float_as_uint(sunsky.config_x[7]),
+                      __float_as_uint(sunsky.config_x[8]),
+                      __float_as_uint(sunsky.config_y[0]),
+                      __float_as_uint(sunsky.config_y[1]));
+    compiler.add_node(__float_as_uint(sunsky.config_y[2]),
+                      __float_as_uint(sunsky.config_y[3]),
+                      __float_as_uint(sunsky.config_y[4]),
+                      __float_as_uint(sunsky.config_y[5]));
+    compiler.add_node(__float_as_uint(sunsky.config_y[6]),
+                      __float_as_uint(sunsky.config_y[7]),
+                      __float_as_uint(sunsky.config_y[8]),
+                      __float_as_uint(sunsky.config_z[0]));
+    compiler.add_node(__float_as_uint(sunsky.config_z[1]),
+                      __float_as_uint(sunsky.config_z[2]),
+                      __float_as_uint(sunsky.config_z[3]),
+                      __float_as_uint(sunsky.config_z[4]));
+    compiler.add_node(__float_as_uint(sunsky.config_z[5]),
+                      __float_as_uint(sunsky.config_z[6]),
+                      __float_as_uint(sunsky.config_z[7]),
+                      __float_as_uint(sunsky.config_z[8]));
+  }
+  else {
+    compiler.add_node(__float_as_uint(sunsky.nishita_data[0]),
+                      __float_as_uint(sunsky.nishita_data[1]),
+                      __float_as_uint(sunsky.nishita_data[2]),
+                      __float_as_uint(sunsky.nishita_data[3]));
+    compiler.add_node(__float_as_uint(sunsky.nishita_data[4]),
+                      __float_as_uint(sunsky.nishita_data[5]),
+                      __float_as_uint(sunsky.nishita_data[6]),
+                      __float_as_uint(sunsky.nishita_data[7]));
+    compiler.add_node(__float_as_uint(sunsky.nishita_data[8]),
+                      __float_as_uint(sunsky.nishita_data[9]),
+                      handle.svm_slot(),
+                      0);
+  }
 
   tex_mapping.compile_end(compiler, vector_in, vector_offset);
 }
@@ -929,14 +925,41 @@ void SkyTextureNode::compile(OSLCompiler &compiler)
   tex_mapping.compile(compiler);
 
   SunSky sunsky;
-  if (type == NODE_SKY_OLD)
-    sky_texture_precompute_old(&sunsky, sun_direction, turbidity);
-  else if (type == NODE_SKY_NEW)
-    sky_texture_precompute_new(&sunsky, sun_direction, turbidity, ground_albedo);
+  if (sky_type == NODE_SKY_PREETHAM)
+    sky_texture_precompute_preetham(&sunsky, sun_direction, turbidity);
+  else if (sky_type == NODE_SKY_HOSEK)
+    sky_texture_precompute_hosek(&sunsky, sun_direction, turbidity, ground_albedo);
+  else if (sky_type == NODE_SKY_NISHITA) {
+    /* Clamp altitude to reasonable values.
+     * Below 1m causes numerical issues and above 60km is space. */
+    float clamped_altitude = clamp(altitude, 1.0f, 59999.0f);
+
+    sky_texture_precompute_nishita(&sunsky,
+                                   sun_disc,
+                                   get_sun_size(),
+                                   sun_intensity,
+                                   sun_elevation,
+                                   sun_rotation,
+                                   clamped_altitude,
+                                   air_density,
+                                   dust_density);
+    /* precomputed texture image parameters */
+    ImageManager *image_manager = compiler.scene->image_manager;
+    ImageParams impar;
+    impar.interpolation = INTERPOLATION_LINEAR;
+    impar.extension = EXTENSION_EXTEND;
+
+    /* precompute sky texture */
+    if (handle.empty()) {
+      SkyLoader *loader = new SkyLoader(
+          sun_elevation, clamped_altitude, air_density, dust_density, ozone_density);
+      handle = image_manager->add_image(loader, impar);
+    }
+  }
   else
     assert(false);
 
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "sky_type");
   compiler.parameter("theta", sunsky.theta);
   compiler.parameter("phi", sunsky.phi);
   compiler.parameter_color("radiance",
@@ -944,6 +967,11 @@ void SkyTextureNode::compile(OSLCompiler &compiler)
   compiler.parameter_array("config_x", sunsky.config_x, 9);
   compiler.parameter_array("config_y", sunsky.config_y, 9);
   compiler.parameter_array("config_z", sunsky.config_z, 9);
+  compiler.parameter_array("nishita_data", sunsky.nishita_data, 10);
+  /* nishita texture */
+  if (sky_type == NODE_SKY_NISHITA) {
+    compiler.parameter_texture("filename", handle.svm_slot());
+  }
   compiler.add(this, "node_sky_texture");
 }
 
@@ -963,7 +991,7 @@ NODE_DEFINE(GradientTextureNode)
   type_enum.insert("radial", NODE_BLEND_RADIAL);
   type_enum.insert("quadratic_sphere", NODE_BLEND_QUADRATIC_SPHERE);
   type_enum.insert("spherical", NODE_BLEND_SPHERICAL);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_BLEND_LINEAR);
+  SOCKET_ENUM(gradient_type, "Type", type_enum, NODE_BLEND_LINEAR);
 
   SOCKET_IN_POINT(
       vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_GENERATED);
@@ -987,7 +1015,7 @@ void GradientTextureNode::compile(SVMCompiler &compiler)
   int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
 
   compiler.add_node(NODE_TEX_GRADIENT,
-                    compiler.encode_uchar4(type,
+                    compiler.encode_uchar4(gradient_type,
                                            vector_offset,
                                            compiler.stack_assign_if_linked(fac_out),
                                            compiler.stack_assign_if_linked(color_out)));
@@ -999,7 +1027,7 @@ void GradientTextureNode::compile(OSLCompiler &compiler)
 {
   tex_mapping.compile(compiler);
 
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "gradient_type");
   compiler.add(this, "node_gradient_texture");
 }
 
@@ -1023,6 +1051,7 @@ NODE_DEFINE(NoiseTextureNode)
   SOCKET_IN_FLOAT(w, "W", 0.0f);
   SOCKET_IN_FLOAT(scale, "Scale", 1.0f);
   SOCKET_IN_FLOAT(detail, "Detail", 2.0f);
+  SOCKET_IN_FLOAT(roughness, "Roughness", 0.5f);
   SOCKET_IN_FLOAT(distortion, "Distortion", 0.0f);
 
   SOCKET_OUT_FLOAT(fac, "Fac");
@@ -1041,6 +1070,7 @@ void NoiseTextureNode::compile(SVMCompiler &compiler)
   ShaderInput *w_in = input("W");
   ShaderInput *scale_in = input("Scale");
   ShaderInput *detail_in = input("Detail");
+  ShaderInput *roughness_in = input("Roughness");
   ShaderInput *distortion_in = input("Distortion");
   ShaderOutput *fac_out = output("Fac");
   ShaderOutput *color_out = output("Color");
@@ -1049,6 +1079,7 @@ void NoiseTextureNode::compile(SVMCompiler &compiler)
   int w_stack_offset = compiler.stack_assign_if_linked(w_in);
   int scale_stack_offset = compiler.stack_assign_if_linked(scale_in);
   int detail_stack_offset = compiler.stack_assign_if_linked(detail_in);
+  int roughness_stack_offset = compiler.stack_assign_if_linked(roughness_in);
   int distortion_stack_offset = compiler.stack_assign_if_linked(distortion_in);
   int fac_stack_offset = compiler.stack_assign_if_linked(fac_out);
   int color_stack_offset = compiler.stack_assign_if_linked(color_out);
@@ -1058,11 +1089,13 @@ void NoiseTextureNode::compile(SVMCompiler &compiler)
       dimensions,
       compiler.encode_uchar4(
           vector_stack_offset, w_stack_offset, scale_stack_offset, detail_stack_offset),
-      compiler.encode_uchar4(distortion_stack_offset, fac_stack_offset, color_stack_offset));
-  compiler.add_node(__float_as_int(w),
-                    __float_as_int(scale),
-                    __float_as_int(detail),
-                    __float_as_int(distortion));
+      compiler.encode_uchar4(
+          roughness_stack_offset, distortion_stack_offset, fac_stack_offset, color_stack_offset));
+  compiler.add_node(
+      __float_as_int(w), __float_as_int(scale), __float_as_int(detail), __float_as_int(roughness));
+
+  compiler.add_node(
+      __float_as_int(distortion), SVM_STACK_INVALID, SVM_STACK_INVALID, SVM_STACK_INVALID);
 
   tex_mapping.compile_end(compiler, vector_in, vector_stack_offset);
 }
@@ -1207,9 +1240,9 @@ IESLightNode::IESLightNode() : TextureNode(node_type)
   slot = -1;
 }
 
-ShaderNode *IESLightNode::clone() const
+ShaderNode *IESLightNode::clone(ShaderGraph *graph) const
 {
-  IESLightNode *node = new IESLightNode(*this);
+  IESLightNode *node = graph->create_node<IESLightNode>(*this);
 
   node->light_manager = NULL;
   node->slot = -1;
@@ -1288,6 +1321,7 @@ NODE_DEFINE(WhiteNoiseTextureNode)
   SOCKET_IN_FLOAT(w, "W", 0.0f);
 
   SOCKET_OUT_FLOAT(value, "Value");
+  SOCKET_OUT_COLOR(color, "Color");
 
   return type;
 }
@@ -1301,15 +1335,17 @@ void WhiteNoiseTextureNode::compile(SVMCompiler &compiler)
   ShaderInput *vector_in = input("Vector");
   ShaderInput *w_in = input("W");
   ShaderOutput *value_out = output("Value");
+  ShaderOutput *color_out = output("Color");
 
   int vector_stack_offset = compiler.stack_assign(vector_in);
   int w_stack_offset = compiler.stack_assign(w_in);
   int value_stack_offset = compiler.stack_assign(value_out);
+  int color_stack_offset = compiler.stack_assign(color_out);
 
   compiler.add_node(NODE_TEX_WHITE_NOISE,
                     dimensions,
                     compiler.encode_uchar4(vector_stack_offset, w_stack_offset),
-                    value_stack_offset);
+                    compiler.encode_uchar4(value_stack_offset, color_stack_offset));
 }
 
 void WhiteNoiseTextureNode::compile(OSLCompiler &compiler)
@@ -1339,7 +1375,7 @@ NODE_DEFINE(MusgraveTextureNode)
   type_enum.insert("hybrid_multifractal", NODE_MUSGRAVE_HYBRID_MULTIFRACTAL);
   type_enum.insert("ridged_multifractal", NODE_MUSGRAVE_RIDGED_MULTIFRACTAL);
   type_enum.insert("hetero_terrain", NODE_MUSGRAVE_HETERO_TERRAIN);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_MUSGRAVE_FBM);
+  SOCKET_ENUM(musgrave_type, "Type", type_enum, NODE_MUSGRAVE_FBM);
 
   SOCKET_IN_POINT(
       vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_GENERATED);
@@ -1347,7 +1383,7 @@ NODE_DEFINE(MusgraveTextureNode)
   SOCKET_IN_FLOAT(scale, "Scale", 1.0f);
   SOCKET_IN_FLOAT(detail, "Detail", 2.0f);
   SOCKET_IN_FLOAT(dimension, "Dimension", 2.0f);
-  SOCKET_IN_FLOAT(lacunarity, "Lacunarity", 1.0f);
+  SOCKET_IN_FLOAT(lacunarity, "Lacunarity", 2.0f);
   SOCKET_IN_FLOAT(offset, "Offset", 0.0f);
   SOCKET_IN_FLOAT(gain, "Gain", 1.0f);
 
@@ -1384,7 +1420,7 @@ void MusgraveTextureNode::compile(SVMCompiler &compiler)
 
   compiler.add_node(
       NODE_TEX_MUSGRAVE,
-      compiler.encode_uchar4(type, dimensions, vector_stack_offset, w_stack_offset),
+      compiler.encode_uchar4(musgrave_type, dimensions, vector_stack_offset, w_stack_offset),
       compiler.encode_uchar4(scale_stack_offset,
                              detail_stack_offset,
                              dimension_stack_offset,
@@ -1401,7 +1437,7 @@ void MusgraveTextureNode::compile(OSLCompiler &compiler)
 {
   tex_mapping.compile(compiler);
 
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "musgrave_type");
   compiler.parameter(this, "dimensions");
   compiler.add(this, "node_musgrave_texture");
 }
@@ -1417,20 +1453,38 @@ NODE_DEFINE(WaveTextureNode)
   static NodeEnum type_enum;
   type_enum.insert("bands", NODE_WAVE_BANDS);
   type_enum.insert("rings", NODE_WAVE_RINGS);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_WAVE_BANDS);
+  SOCKET_ENUM(wave_type, "Type", type_enum, NODE_WAVE_BANDS);
+
+  static NodeEnum bands_direction_enum;
+  bands_direction_enum.insert("x", NODE_WAVE_BANDS_DIRECTION_X);
+  bands_direction_enum.insert("y", NODE_WAVE_BANDS_DIRECTION_Y);
+  bands_direction_enum.insert("z", NODE_WAVE_BANDS_DIRECTION_Z);
+  bands_direction_enum.insert("diagonal", NODE_WAVE_BANDS_DIRECTION_DIAGONAL);
+  SOCKET_ENUM(
+      bands_direction, "Bands Direction", bands_direction_enum, NODE_WAVE_BANDS_DIRECTION_X);
+
+  static NodeEnum rings_direction_enum;
+  rings_direction_enum.insert("x", NODE_WAVE_RINGS_DIRECTION_X);
+  rings_direction_enum.insert("y", NODE_WAVE_RINGS_DIRECTION_Y);
+  rings_direction_enum.insert("z", NODE_WAVE_RINGS_DIRECTION_Z);
+  rings_direction_enum.insert("spherical", NODE_WAVE_RINGS_DIRECTION_SPHERICAL);
+  SOCKET_ENUM(
+      rings_direction, "Rings Direction", rings_direction_enum, NODE_WAVE_BANDS_DIRECTION_X);
 
   static NodeEnum profile_enum;
   profile_enum.insert("sine", NODE_WAVE_PROFILE_SIN);
   profile_enum.insert("saw", NODE_WAVE_PROFILE_SAW);
+  profile_enum.insert("tri", NODE_WAVE_PROFILE_TRI);
   SOCKET_ENUM(profile, "Profile", profile_enum, NODE_WAVE_PROFILE_SIN);
 
+  SOCKET_IN_POINT(
+      vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_GENERATED);
   SOCKET_IN_FLOAT(scale, "Scale", 1.0f);
   SOCKET_IN_FLOAT(distortion, "Distortion", 0.0f);
   SOCKET_IN_FLOAT(detail, "Detail", 2.0f);
   SOCKET_IN_FLOAT(detail_scale, "Detail Scale", 0.0f);
-  SOCKET_IN_POINT(
-      vector, "Vector", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TEXTURE_GENERATED);
-
+  SOCKET_IN_FLOAT(detail_roughness, "Detail Roughness", 0.5f);
+  SOCKET_IN_FLOAT(phase, "Phase Offset", 0.0f);
   SOCKET_OUT_COLOR(color, "Color");
   SOCKET_OUT_FLOAT(fac, "Fac");
 
@@ -1443,31 +1497,38 @@ WaveTextureNode::WaveTextureNode() : TextureNode(node_type)
 
 void WaveTextureNode::compile(SVMCompiler &compiler)
 {
+  ShaderInput *vector_in = input("Vector");
   ShaderInput *scale_in = input("Scale");
   ShaderInput *distortion_in = input("Distortion");
-  ShaderInput *dscale_in = input("Detail Scale");
   ShaderInput *detail_in = input("Detail");
-  ShaderInput *vector_in = input("Vector");
-  ShaderOutput *fac_out = output("Fac");
+  ShaderInput *dscale_in = input("Detail Scale");
+  ShaderInput *droughness_in = input("Detail Roughness");
+  ShaderInput *phase_in = input("Phase Offset");
   ShaderOutput *color_out = output("Color");
+  ShaderOutput *fac_out = output("Fac");
 
   int vector_offset = tex_mapping.compile_begin(compiler, vector_in);
 
   compiler.add_node(NODE_TEX_WAVE,
-                    compiler.encode_uchar4(type,
-                                           compiler.stack_assign_if_linked(color_out),
-                                           compiler.stack_assign_if_linked(fac_out),
-                                           compiler.stack_assign_if_linked(dscale_in)),
+                    compiler.encode_uchar4(wave_type, bands_direction, rings_direction, profile),
                     compiler.encode_uchar4(vector_offset,
                                            compiler.stack_assign_if_linked(scale_in),
-                                           compiler.stack_assign_if_linked(detail_in),
                                            compiler.stack_assign_if_linked(distortion_in)),
-                    profile);
+                    compiler.encode_uchar4(compiler.stack_assign_if_linked(detail_in),
+                                           compiler.stack_assign_if_linked(dscale_in),
+                                           compiler.stack_assign_if_linked(droughness_in),
+                                           compiler.stack_assign_if_linked(phase_in)));
 
-  compiler.add_node(__float_as_int(scale),
-                    __float_as_int(detail),
+  compiler.add_node(compiler.encode_uchar4(compiler.stack_assign_if_linked(color_out),
+                                           compiler.stack_assign_if_linked(fac_out)),
+                    __float_as_int(scale),
                     __float_as_int(distortion),
-                    __float_as_int(detail_scale));
+                    __float_as_int(detail));
+
+  compiler.add_node(__float_as_int(detail_scale),
+                    __float_as_int(detail_roughness),
+                    __float_as_int(phase),
+                    SVM_STACK_INVALID);
 
   tex_mapping.compile_end(compiler, vector_in, vector_offset);
 }
@@ -1476,7 +1537,9 @@ void WaveTextureNode::compile(OSLCompiler &compiler)
 {
   tex_mapping.compile(compiler);
 
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "wave_type");
+  compiler.parameter(this, "bands_direction");
+  compiler.parameter(this, "rings_direction");
   compiler.parameter(this, "profile");
 
   compiler.add(this, "node_wave_texture");
@@ -1719,32 +1782,20 @@ NODE_DEFINE(PointDensityTextureNode)
 
 PointDensityTextureNode::PointDensityTextureNode() : ShaderNode(node_type)
 {
-  image_manager = NULL;
-  slot = -1;
-  builtin_data = NULL;
 }
 
 PointDensityTextureNode::~PointDensityTextureNode()
 {
-  if (image_manager) {
-    image_manager->remove_image(filename.string(),
-                                builtin_data,
-                                interpolation,
-                                EXTENSION_CLIP,
-                                IMAGE_ALPHA_AUTO,
-                                ustring());
-  }
 }
 
-ShaderNode *PointDensityTextureNode::clone() const
+ShaderNode *PointDensityTextureNode::clone(ShaderGraph *graph) const
 {
   /* Increase image user count for new node. We need to ensure to not call
    * add_image again, to work around access of freed data on the Blender
    * side. A better solution should be found to avoid this. */
-  if (slot != -1) {
-    image_manager->add_image_user(slot);
-  }
-  return new PointDensityTextureNode(*this);
+  PointDensityTextureNode *node = graph->create_node<PointDensityTextureNode>(*this);
+  node->handle = handle; /* TODO: not needed? */
+  return node;
 }
 
 void PointDensityTextureNode::attributes(Shader *shader, AttributeRequestSet *attributes)
@@ -1755,20 +1806,11 @@ void PointDensityTextureNode::attributes(Shader *shader, AttributeRequestSet *at
   ShaderNode::attributes(shader, attributes);
 }
 
-void PointDensityTextureNode::add_image()
+ImageParams PointDensityTextureNode::image_params() const
 {
-  if (slot == -1) {
-    ImageMetaData metadata;
-    slot = image_manager->add_image(filename.string(),
-                                    builtin_data,
-                                    false,
-                                    0,
-                                    interpolation,
-                                    EXTENSION_CLIP,
-                                    IMAGE_ALPHA_AUTO,
-                                    u_colorspace_raw,
-                                    metadata);
-  }
+  ImageParams params;
+  params.interpolation = interpolation;
+  return params;
 }
 
 void PointDensityTextureNode::compile(SVMCompiler &compiler)
@@ -1780,11 +1822,13 @@ void PointDensityTextureNode::compile(SVMCompiler &compiler)
   const bool use_density = !density_out->links.empty();
   const bool use_color = !color_out->links.empty();
 
-  image_manager = compiler.scene->image_manager;
-
   if (use_density || use_color) {
-    add_image();
+    if (handle.empty()) {
+      ImageManager *image_manager = compiler.scene->image_manager;
+      handle = image_manager->add_image(filename.string(), image_params());
+    }
 
+    const int slot = handle.svm_slot();
     if (slot != -1) {
       compiler.stack_assign(vector_in);
       compiler.add_node(NODE_TEX_VOXEL,
@@ -1821,12 +1865,13 @@ void PointDensityTextureNode::compile(OSLCompiler &compiler)
   const bool use_density = !density_out->links.empty();
   const bool use_color = !color_out->links.empty();
 
-  image_manager = compiler.scene->image_manager;
-
   if (use_density || use_color) {
-    add_image();
+    if (handle.empty()) {
+      ImageManager *image_manager = compiler.scene->image_manager;
+      handle = image_manager->add_image(filename.string(), image_params());
+    }
 
-    compiler.parameter_texture("filename", slot);
+    compiler.parameter_texture("filename", handle.svm_slot());
     if (space == NODE_TEX_VOXEL_SPACE_WORLD) {
       compiler.parameter("mapping", tfm);
       compiler.parameter("use_mapping", 1);
@@ -1887,7 +1932,7 @@ NODE_DEFINE(MappingNode)
   type_enum.insert("texture", NODE_MAPPING_TYPE_TEXTURE);
   type_enum.insert("vector", NODE_MAPPING_TYPE_VECTOR);
   type_enum.insert("normal", NODE_MAPPING_TYPE_NORMAL);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_MAPPING_TYPE_POINT);
+  SOCKET_ENUM(mapping_type, "Type", type_enum, NODE_MAPPING_TYPE_POINT);
 
   SOCKET_IN_POINT(vector, "Vector", make_float3(0.0f, 0.0f, 0.0f));
   SOCKET_IN_POINT(location, "Location", make_float3(0.0f, 0.0f, 0.0f));
@@ -1906,11 +1951,11 @@ MappingNode::MappingNode() : ShaderNode(node_type)
 void MappingNode::constant_fold(const ConstantFolder &folder)
 {
   if (folder.all_inputs_constant()) {
-    float3 result = svm_mapping((NodeMappingType)type, vector, location, rotation, scale);
+    float3 result = svm_mapping((NodeMappingType)mapping_type, vector, location, rotation, scale);
     folder.make_constant(result);
   }
   else {
-    folder.fold_mapping((NodeMappingType)type);
+    folder.fold_mapping((NodeMappingType)mapping_type);
   }
 }
 
@@ -1930,7 +1975,7 @@ void MappingNode::compile(SVMCompiler &compiler)
 
   compiler.add_node(
       NODE_MAPPING,
-      type,
+      mapping_type,
       compiler.encode_uchar4(
           vector_stack_offset, location_stack_offset, rotation_stack_offset, scale_stack_offset),
       result_stack_offset);
@@ -1938,7 +1983,7 @@ void MappingNode::compile(SVMCompiler &compiler)
 
 void MappingNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "mapping_type");
   compiler.add(this, "node_mapping");
 }
 
@@ -2250,12 +2295,11 @@ NODE_DEFINE(AnisotropicBsdfNode)
   SOCKET_IN_FLOAT(surface_mix_weight, "SurfaceMixWeight", 0.0f, SocketType::SVM_INTERNAL);
 
   static NodeEnum distribution_enum;
-  distribution_enum.insert("beckmann", CLOSURE_BSDF_MICROFACET_BECKMANN_ANISO_ID);
-  distribution_enum.insert("GGX", CLOSURE_BSDF_MICROFACET_GGX_ANISO_ID);
-  distribution_enum.insert("Multiscatter GGX", CLOSURE_BSDF_MICROFACET_MULTI_GGX_ANISO_ID);
-  distribution_enum.insert("ashikhmin_shirley", CLOSURE_BSDF_ASHIKHMIN_SHIRLEY_ANISO_ID);
-  SOCKET_ENUM(
-      distribution, "Distribution", distribution_enum, CLOSURE_BSDF_MICROFACET_GGX_ANISO_ID);
+  distribution_enum.insert("beckmann", CLOSURE_BSDF_MICROFACET_BECKMANN_ID);
+  distribution_enum.insert("GGX", CLOSURE_BSDF_MICROFACET_GGX_ID);
+  distribution_enum.insert("Multiscatter GGX", CLOSURE_BSDF_MICROFACET_MULTI_GGX_ID);
+  distribution_enum.insert("ashikhmin_shirley", CLOSURE_BSDF_ASHIKHMIN_SHIRLEY_ID);
+  SOCKET_ENUM(distribution, "Distribution", distribution_enum, CLOSURE_BSDF_MICROFACET_GGX_ID);
 
   SOCKET_IN_VECTOR(tangent, "Tangent", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_TANGENT);
 
@@ -2270,7 +2314,7 @@ NODE_DEFINE(AnisotropicBsdfNode)
 
 AnisotropicBsdfNode::AnisotropicBsdfNode() : BsdfNode(node_type)
 {
-  closure = CLOSURE_BSDF_MICROFACET_GGX_ANISO_ID;
+  closure = CLOSURE_BSDF_MICROFACET_GGX_ID;
 }
 
 void AnisotropicBsdfNode::attributes(Shader *shader, AttributeRequestSet *attributes)
@@ -2289,7 +2333,7 @@ void AnisotropicBsdfNode::compile(SVMCompiler &compiler)
 {
   closure = distribution;
 
-  if (closure == CLOSURE_BSDF_MICROFACET_MULTI_GGX_ANISO_ID)
+  if (closure == CLOSURE_BSDF_MICROFACET_MULTI_GGX_ID)
     BsdfNode::compile(
         compiler, input("Roughness"), input("Anisotropy"), input("Rotation"), input("Color"));
   else
@@ -2347,7 +2391,7 @@ void GlossyBsdfNode::simplify_settings(Scene *scene)
   }
   Integrator *integrator = scene->integrator;
   ShaderInput *roughness_input = input("Roughness");
-  if (integrator->filter_glossy == 0.0f) {
+  if (integrator->get_filter_glossy() == 0.0f) {
     /* Fallback to Sharp closure for Roughness close to 0.
      * Note: Keep the epsilon in sync with kernel!
      */
@@ -2383,7 +2427,7 @@ void GlossyBsdfNode::compile(SVMCompiler &compiler)
   if (closure == CLOSURE_BSDF_REFLECTION_ID)
     BsdfNode::compile(compiler, NULL, NULL);
   else if (closure == CLOSURE_BSDF_MICROFACET_MULTI_GGX_ID)
-    BsdfNode::compile(compiler, input("Roughness"), NULL, input("Color"));
+    BsdfNode::compile(compiler, input("Roughness"), NULL, NULL, input("Color"));
   else
     BsdfNode::compile(compiler, input("Roughness"), NULL);
 }
@@ -2440,7 +2484,7 @@ void GlassBsdfNode::simplify_settings(Scene *scene)
   }
   Integrator *integrator = scene->integrator;
   ShaderInput *roughness_input = input("Roughness");
-  if (integrator->filter_glossy == 0.0f) {
+  if (integrator->get_filter_glossy() == 0.0f) {
     /* Fallback to Sharp closure for Roughness close to 0.
      * Note: Keep the epsilon in sync with kernel!
      */
@@ -2533,7 +2577,7 @@ void RefractionBsdfNode::simplify_settings(Scene *scene)
   }
   Integrator *integrator = scene->integrator;
   ShaderInput *roughness_input = input("Roughness");
-  if (integrator->filter_glossy == 0.0f) {
+  if (integrator->get_filter_glossy() == 0.0f) {
     /* Fallback to Sharp closure for Roughness close to 0.
      * Note: Keep the epsilon in sync with kernel!
      */
@@ -2717,6 +2761,7 @@ NODE_DEFINE(PrincipledBsdfNode)
   SOCKET_IN_FLOAT(transmission_roughness, "Transmission Roughness", 0.0f);
   SOCKET_IN_FLOAT(anisotropic_rotation, "Anisotropic Rotation", 0.0f);
   SOCKET_IN_COLOR(emission, "Emission", make_float3(0.0f, 0.0f, 0.0f));
+  SOCKET_IN_FLOAT(emission_strength, "Emission Strength", 1.0f);
   SOCKET_IN_FLOAT(alpha, "Alpha", 1.0f);
   SOCKET_IN_NORMAL(normal, "Normal", make_float3(0.0f, 0.0f, 0.0f), SocketType::LINK_NORMAL);
   SOCKET_IN_NORMAL(clearcoat_normal,
@@ -2743,16 +2788,18 @@ void PrincipledBsdfNode::expand(ShaderGraph *graph)
   ShaderOutput *principled_out = output("BSDF");
 
   ShaderInput *emission_in = input("Emission");
-  if (emission_in->link || emission != make_float3(0.0f, 0.0f, 0.0f)) {
+  ShaderInput *emission_strength_in = input("Emission Strength");
+  if ((emission_in->link || emission != make_float3(0.0f, 0.0f, 0.0f)) &&
+      (emission_strength_in->link || emission_strength != 0.0f)) {
     /* Create add closure and emission. */
-    AddClosureNode *add = new AddClosureNode();
-    EmissionNode *emission_node = new EmissionNode();
+    AddClosureNode *add = graph->create_node<AddClosureNode>();
+    EmissionNode *emission_node = graph->create_node<EmissionNode>();
     ShaderOutput *new_out = add->output("Closure");
 
     graph->add(add);
     graph->add(emission_node);
 
-    emission_node->strength = 1.0f;
+    graph->relink(emission_strength_in, emission_node->input("Strength"));
     graph->relink(emission_in, emission_node->input("Color"));
     graph->relink(principled_out, new_out);
     graph->connect(emission_node->output("Emission"), add->input("Closure1"));
@@ -2764,8 +2811,8 @@ void PrincipledBsdfNode::expand(ShaderGraph *graph)
   ShaderInput *alpha_in = input("Alpha");
   if (alpha_in->link || alpha != 1.0f) {
     /* Create mix and transparent BSDF for alpha transparency. */
-    MixClosureNode *mix = new MixClosureNode();
-    TransparentBsdfNode *transparent = new TransparentBsdfNode();
+    MixClosureNode *mix = graph->create_node<MixClosureNode>();
+    TransparentBsdfNode *transparent = graph->create_node<TransparentBsdfNode>();
 
     graph->add(mix);
     graph->add(transparent);
@@ -3340,7 +3387,7 @@ NODE_DEFINE(PrincipledVolumeNode)
   SOCKET_IN_COLOR(emission_color, "Emission Color", make_float3(1.0f, 1.0f, 1.0f));
   SOCKET_IN_FLOAT(blackbody_intensity, "Blackbody Intensity", 0.0f);
   SOCKET_IN_COLOR(blackbody_tint, "Blackbody Tint", make_float3(1.0f, 1.0f, 1.0f));
-  SOCKET_IN_FLOAT(temperature, "Temperature", 1500.0f);
+  SOCKET_IN_FLOAT(temperature, "Temperature", 1000.0f);
   SOCKET_IN_FLOAT(volume_mix_weight, "VolumeMixWeight", 0.0f, SocketType::SVM_INTERNAL);
 
   SOCKET_OUT_CLOSURE(volume, "Volume");
@@ -3351,6 +3398,8 @@ NODE_DEFINE(PrincipledVolumeNode)
 PrincipledVolumeNode::PrincipledVolumeNode() : VolumeNode(node_type)
 {
   closure = CLOSURE_VOLUME_HENYEY_GREENSTEIN_ID;
+  density_attribute = ustring("density");
+  temperature_attribute = ustring("temperature");
 }
 
 void PrincipledVolumeNode::attributes(Shader *shader, AttributeRequestSet *attributes)
@@ -3700,7 +3749,7 @@ void GeometryNode::compile(SVMCompiler &compiler)
   if (!out->links.empty()) {
     if (compiler.output_type() != SHADER_TYPE_VOLUME) {
       compiler.add_node(
-          attr_node, ATTR_STD_POINTINESS, compiler.stack_assign(out), NODE_ATTR_FLOAT);
+          attr_node, ATTR_STD_POINTINESS, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT);
     }
     else {
       compiler.add_node(NODE_VALUE_F, __float_as_int(0.0f), compiler.stack_assign(out));
@@ -3710,8 +3759,10 @@ void GeometryNode::compile(SVMCompiler &compiler)
   out = output("Random Per Island");
   if (!out->links.empty()) {
     if (compiler.output_type() != SHADER_TYPE_VOLUME) {
-      compiler.add_node(
-          attr_node, ATTR_STD_RANDOM_PER_ISLAND, compiler.stack_assign(out), NODE_ATTR_FLOAT);
+      compiler.add_node(attr_node,
+                        ATTR_STD_RANDOM_PER_ISLAND,
+                        compiler.stack_assign(out),
+                        NODE_ATTR_OUTPUT_FLOAT);
     }
     else {
       compiler.add_node(NODE_VALUE_F, __float_as_int(0.0f), compiler.stack_assign(out));
@@ -3829,7 +3880,7 @@ void TextureCoordinateNode::compile(SVMCompiler &compiler)
       }
       else {
         int attr = compiler.attribute(ATTR_STD_GENERATED);
-        compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_FLOAT3);
+        compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT3);
       }
     }
   }
@@ -3846,7 +3897,7 @@ void TextureCoordinateNode::compile(SVMCompiler &compiler)
     }
     else {
       int attr = compiler.attribute(ATTR_STD_UV);
-      compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_FLOAT3);
+      compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT3);
     }
   }
 
@@ -3964,7 +4015,7 @@ void UVMapNode::compile(SVMCompiler &compiler)
       else
         attr = compiler.attribute(ATTR_STD_UV);
 
-      compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_FLOAT3);
+      compiler.add_node(attr_node, attr, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT3);
     }
   }
 }
@@ -4360,7 +4411,7 @@ void HairInfoNode::compile(SVMCompiler &compiler)
   out = output("Intercept");
   if (!out->links.empty()) {
     int attr = compiler.attribute(ATTR_STD_CURVE_INTERCEPT);
-    compiler.add_node(NODE_ATTR, attr, compiler.stack_assign(out), NODE_ATTR_FLOAT);
+    compiler.add_node(NODE_ATTR, attr, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT);
   }
 
   out = output("Thickness");
@@ -4381,7 +4432,7 @@ void HairInfoNode::compile(SVMCompiler &compiler)
   out = output("Random");
   if (!out->links.empty()) {
     int attr = compiler.attribute(ATTR_STD_CURVE_RANDOM);
-    compiler.add_node(NODE_ATTR, attr, compiler.stack_assign(out), NODE_ATTR_FLOAT);
+    compiler.add_node(NODE_ATTR, attr, compiler.stack_assign(out), NODE_ATTR_OUTPUT_FLOAT);
   }
 }
 
@@ -4435,32 +4486,32 @@ void VolumeInfoNode::expand(ShaderGraph *graph)
 {
   ShaderOutput *color_out = output("Color");
   if (!color_out->links.empty()) {
-    AttributeNode *attr = new AttributeNode();
-    attr->attribute = "color";
+    AttributeNode *attr = graph->create_node<AttributeNode>();
+    attr->set_attribute(ustring("color"));
     graph->add(attr);
     graph->relink(color_out, attr->output("Color"));
   }
 
   ShaderOutput *density_out = output("Density");
   if (!density_out->links.empty()) {
-    AttributeNode *attr = new AttributeNode();
-    attr->attribute = "density";
+    AttributeNode *attr = graph->create_node<AttributeNode>();
+    attr->set_attribute(ustring("density"));
     graph->add(attr);
     graph->relink(density_out, attr->output("Fac"));
   }
 
   ShaderOutput *flame_out = output("Flame");
   if (!flame_out->links.empty()) {
-    AttributeNode *attr = new AttributeNode();
-    attr->attribute = "flame";
+    AttributeNode *attr = graph->create_node<AttributeNode>();
+    attr->set_attribute(ustring("flame"));
     graph->add(attr);
     graph->relink(flame_out, attr->output("Fac"));
   }
 
   ShaderOutput *temperature_out = output("Temperature");
   if (!temperature_out->links.empty()) {
-    AttributeNode *attr = new AttributeNode();
-    attr->attribute = "temperature";
+    AttributeNode *attr = graph->create_node<AttributeNode>();
+    attr->set_attribute(ustring("temperature"));
     graph->add(attr);
     graph->relink(temperature_out, attr->output("Fac"));
   }
@@ -4492,7 +4543,10 @@ VertexColorNode::VertexColorNode() : ShaderNode(node_type)
 void VertexColorNode::attributes(Shader *shader, AttributeRequestSet *attributes)
 {
   if (!(output("Color")->links.empty() && output("Alpha")->links.empty())) {
-    attributes->add_standard(layer_name);
+    if (layer_name != "")
+      attributes->add_standard(layer_name);
+    else
+      attributes->add(ATTR_STD_VERTEX_COLOR);
   }
   ShaderNode::attributes(shader, attributes);
 }
@@ -4501,7 +4555,14 @@ void VertexColorNode::compile(SVMCompiler &compiler)
 {
   ShaderOutput *color_out = output("Color");
   ShaderOutput *alpha_out = output("Alpha");
-  int layer_id = compiler.attribute(layer_name);
+  int layer_id = 0;
+
+  if (layer_name != "") {
+    layer_id = compiler.attribute(layer_name);
+  }
+  else {
+    layer_id = compiler.attribute(ATTR_STD_VERTEX_COLOR);
+  }
 
   ShaderNodeType node;
 
@@ -4528,7 +4589,19 @@ void VertexColorNode::compile(OSLCompiler &compiler)
   else {
     compiler.parameter("bump_offset", "center");
   }
-  compiler.parameter("layer_name", layer_name.c_str());
+
+  if (layer_name.empty()) {
+    compiler.parameter("layer_name", ustring("geom:vertex_color"));
+  }
+  else {
+    if (Attribute::name_standard(layer_name.c_str()) != ATTR_STD_NONE) {
+      compiler.parameter("name", (string("geom:") + layer_name.c_str()).c_str());
+    }
+    else {
+      compiler.parameter("layer_name", layer_name.c_str());
+    }
+  }
+
   compiler.add(this, "node_vertex_color");
 }
 
@@ -4815,7 +4888,7 @@ NODE_DEFINE(MixNode)
   type_enum.insert("color", NODE_MIX_COLOR);
   type_enum.insert("soft_light", NODE_MIX_SOFT);
   type_enum.insert("linear_light", NODE_MIX_LINEAR);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_MIX_BLEND);
+  SOCKET_ENUM(mix_type, "Type", type_enum, NODE_MIX_BLEND);
 
   SOCKET_BOOLEAN(use_clamp, "Use Clamp", false);
 
@@ -4843,7 +4916,7 @@ void MixNode::compile(SVMCompiler &compiler)
                     compiler.stack_assign(fac_in),
                     compiler.stack_assign(color1_in),
                     compiler.stack_assign(color2_in));
-  compiler.add_node(NODE_MIX, type, compiler.stack_assign(color_out));
+  compiler.add_node(NODE_MIX, mix_type, compiler.stack_assign(color_out));
 
   if (use_clamp) {
     compiler.add_node(NODE_MIX, 0, compiler.stack_assign(color_out));
@@ -4853,7 +4926,7 @@ void MixNode::compile(SVMCompiler &compiler)
 
 void MixNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "mix_type");
   compiler.parameter(this, "use_clamp");
   compiler.add(this, "node_mix");
 }
@@ -4861,10 +4934,10 @@ void MixNode::compile(OSLCompiler &compiler)
 void MixNode::constant_fold(const ConstantFolder &folder)
 {
   if (folder.all_inputs_constant()) {
-    folder.make_constant_clamp(svm_mix(type, fac, color1, color2), use_clamp);
+    folder.make_constant_clamp(svm_mix(mix_type, fac, color1, color2), use_clamp);
   }
   else {
-    folder.fold_mix(type, use_clamp);
+    folder.fold_mix(mix_type, use_clamp);
   }
 }
 
@@ -5321,6 +5394,7 @@ NODE_DEFINE(AttributeNode)
   SOCKET_OUT_COLOR(color, "Color");
   SOCKET_OUT_VECTOR(vector, "Vector");
   SOCKET_OUT_FLOAT(fac, "Fac");
+  SOCKET_OUT_FLOAT(alpha, "Alpha");
 
   return type;
 }
@@ -5334,8 +5408,10 @@ void AttributeNode::attributes(Shader *shader, AttributeRequestSet *attributes)
   ShaderOutput *color_out = output("Color");
   ShaderOutput *vector_out = output("Vector");
   ShaderOutput *fac_out = output("Fac");
+  ShaderOutput *alpha_out = output("Alpha");
 
-  if (!color_out->links.empty() || !vector_out->links.empty() || !fac_out->links.empty()) {
+  if (!color_out->links.empty() || !vector_out->links.empty() || !fac_out->links.empty() ||
+      !alpha_out->links.empty()) {
     attributes->add_standard(attribute);
   }
 
@@ -5351,6 +5427,7 @@ void AttributeNode::compile(SVMCompiler &compiler)
   ShaderOutput *color_out = output("Color");
   ShaderOutput *vector_out = output("Vector");
   ShaderOutput *fac_out = output("Fac");
+  ShaderOutput *alpha_out = output("Alpha");
   ShaderNodeType attr_node = NODE_ATTR;
   int attr = compiler.attribute_standard(attribute);
 
@@ -5361,15 +5438,22 @@ void AttributeNode::compile(SVMCompiler &compiler)
 
   if (!color_out->links.empty() || !vector_out->links.empty()) {
     if (!color_out->links.empty()) {
-      compiler.add_node(attr_node, attr, compiler.stack_assign(color_out), NODE_ATTR_FLOAT3);
+      compiler.add_node(
+          attr_node, attr, compiler.stack_assign(color_out), NODE_ATTR_OUTPUT_FLOAT3);
     }
     if (!vector_out->links.empty()) {
-      compiler.add_node(attr_node, attr, compiler.stack_assign(vector_out), NODE_ATTR_FLOAT3);
+      compiler.add_node(
+          attr_node, attr, compiler.stack_assign(vector_out), NODE_ATTR_OUTPUT_FLOAT3);
     }
   }
 
   if (!fac_out->links.empty()) {
-    compiler.add_node(attr_node, attr, compiler.stack_assign(fac_out), NODE_ATTR_FLOAT);
+    compiler.add_node(attr_node, attr, compiler.stack_assign(fac_out), NODE_ATTR_OUTPUT_FLOAT);
+  }
+
+  if (!alpha_out->links.empty()) {
+    compiler.add_node(
+        attr_node, attr, compiler.stack_assign(alpha_out), NODE_ATTR_OUTPUT_FLOAT_ALPHA);
   }
 }
 
@@ -5683,7 +5767,7 @@ NODE_DEFINE(MapRangeNode)
   type_enum.insert("stepped", NODE_MAP_RANGE_STEPPED);
   type_enum.insert("smoothstep", NODE_MAP_RANGE_SMOOTHSTEP);
   type_enum.insert("smootherstep", NODE_MAP_RANGE_SMOOTHERSTEP);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_MAP_RANGE_LINEAR);
+  SOCKET_ENUM(range_type, "Type", type_enum, NODE_MAP_RANGE_LINEAR);
 
   SOCKET_IN_FLOAT(value, "Value", 1.0f);
   SOCKET_IN_FLOAT(from_min, "From Min", 0.0f);
@@ -5691,6 +5775,7 @@ NODE_DEFINE(MapRangeNode)
   SOCKET_IN_FLOAT(to_min, "To Min", 0.0f);
   SOCKET_IN_FLOAT(to_max, "To Max", 1.0f);
   SOCKET_IN_FLOAT(steps, "Steps", 4.0f);
+  SOCKET_IN_BOOLEAN(clamp, "Clamp", false);
 
   SOCKET_OUT_FLOAT(result, "Result");
 
@@ -5706,8 +5791,8 @@ void MapRangeNode::expand(ShaderGraph *graph)
   if (clamp) {
     ShaderOutput *result_out = output("Result");
     if (!result_out->links.empty()) {
-      ClampNode *clamp_node = new ClampNode();
-      clamp_node->type = NODE_CLAMP_RANGE;
+      ClampNode *clamp_node = graph->create_node<ClampNode>();
+      clamp_node->set_clamp_type(NODE_CLAMP_RANGE);
       graph->add(clamp_node);
       graph->relink(result_out, clamp_node->output("Result"));
       graph->connect(result_out, clamp_node->input("Value"));
@@ -5715,13 +5800,13 @@ void MapRangeNode::expand(ShaderGraph *graph)
         graph->connect(input("To Min")->link, clamp_node->input("Min"));
       }
       else {
-        clamp_node->min = to_min;
+        clamp_node->set_min(to_min);
       }
       if (input("To Max")->link) {
         graph->connect(input("To Max")->link, clamp_node->input("Max"));
       }
       else {
-        clamp_node->max = to_max;
+        clamp_node->set_max(to_max);
       }
     }
   }
@@ -5750,7 +5835,7 @@ void MapRangeNode::compile(SVMCompiler &compiler)
       value_stack_offset,
       compiler.encode_uchar4(
           from_min_stack_offset, from_max_stack_offset, to_min_stack_offset, to_max_stack_offset),
-      compiler.encode_uchar4(type, steps_stack_offset, result_stack_offset));
+      compiler.encode_uchar4(range_type, steps_stack_offset, result_stack_offset));
 
   compiler.add_node(__float_as_int(from_min),
                     __float_as_int(from_max),
@@ -5761,7 +5846,7 @@ void MapRangeNode::compile(SVMCompiler &compiler)
 
 void MapRangeNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "range_type");
   compiler.add(this, "node_map_range");
 }
 
@@ -5774,7 +5859,7 @@ NODE_DEFINE(ClampNode)
   static NodeEnum type_enum;
   type_enum.insert("minmax", NODE_CLAMP_MINMAX);
   type_enum.insert("range", NODE_CLAMP_RANGE);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_CLAMP_MINMAX);
+  SOCKET_ENUM(clamp_type, "Type", type_enum, NODE_CLAMP_MINMAX);
 
   SOCKET_IN_FLOAT(value, "Value", 1.0f);
   SOCKET_IN_FLOAT(min, "Min", 0.0f);
@@ -5792,7 +5877,7 @@ ClampNode::ClampNode() : ShaderNode(node_type)
 void ClampNode::constant_fold(const ConstantFolder &folder)
 {
   if (folder.all_inputs_constant()) {
-    if (type == NODE_CLAMP_RANGE && (min > max)) {
+    if (clamp_type == NODE_CLAMP_RANGE && (min > max)) {
       folder.make_constant(clamp(value, max, min));
     }
     else {
@@ -5815,14 +5900,14 @@ void ClampNode::compile(SVMCompiler &compiler)
 
   compiler.add_node(NODE_CLAMP,
                     value_stack_offset,
-                    compiler.encode_uchar4(min_stack_offset, max_stack_offset, type),
+                    compiler.encode_uchar4(min_stack_offset, max_stack_offset, clamp_type),
                     result_stack_offset);
   compiler.add_node(__float_as_int(min), __float_as_int(max));
 }
 
 void ClampNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "clamp_type");
   compiler.add(this, "node_clamp");
 }
 
@@ -5848,9 +5933,9 @@ OutputAOVNode::OutputAOVNode() : ShaderNode(node_type)
 
 void OutputAOVNode::simplify_settings(Scene *scene)
 {
-  slot = scene->film->get_aov_offset(name.string(), is_color);
+  slot = scene->film->get_aov_offset(scene, name.string(), is_color);
   if (slot == -1) {
-    slot = scene->film->get_aov_offset(name.string(), is_color);
+    slot = scene->film->get_aov_offset(scene, name.string(), is_color);
   }
 
   if (slot == -1 || is_color) {
@@ -5925,7 +6010,7 @@ NODE_DEFINE(MathNode)
   type_enum.insert("smoothmin", NODE_MATH_SMOOTH_MIN);
   type_enum.insert("smoothmax", NODE_MATH_SMOOTH_MAX);
   type_enum.insert("compare", NODE_MATH_COMPARE);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_MATH_ADD);
+  SOCKET_ENUM(math_type, "Type", type_enum, NODE_MATH_ADD);
 
   SOCKET_BOOLEAN(use_clamp, "Use Clamp", false);
 
@@ -5947,10 +6032,10 @@ void MathNode::expand(ShaderGraph *graph)
   if (use_clamp) {
     ShaderOutput *result_out = output("Value");
     if (!result_out->links.empty()) {
-      ClampNode *clamp_node = new ClampNode();
-      clamp_node->type = NODE_CLAMP_MINMAX;
-      clamp_node->min = 0.0f;
-      clamp_node->max = 1.0f;
+      ClampNode *clamp_node = graph->create_node<ClampNode>();
+      clamp_node->set_clamp_type(NODE_CLAMP_MINMAX);
+      clamp_node->set_min(0.0f);
+      clamp_node->set_max(1.0f);
       graph->add(clamp_node);
       graph->relink(result_out, clamp_node->output("Result"));
       graph->connect(result_out, clamp_node->input("Value"));
@@ -5961,10 +6046,10 @@ void MathNode::expand(ShaderGraph *graph)
 void MathNode::constant_fold(const ConstantFolder &folder)
 {
   if (folder.all_inputs_constant()) {
-    folder.make_constant(svm_math(type, value1, value2, value3));
+    folder.make_constant(svm_math(math_type, value1, value2, value3));
   }
   else {
-    folder.fold_math(type);
+    folder.fold_math(math_type);
   }
 }
 
@@ -5982,14 +6067,14 @@ void MathNode::compile(SVMCompiler &compiler)
 
   compiler.add_node(
       NODE_MATH,
-      type,
+      math_type,
       compiler.encode_uchar4(value1_stack_offset, value2_stack_offset, value3_stack_offset),
       value_stack_offset);
 }
 
 void MathNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "math_type");
   compiler.add(this, "node_math");
 }
 
@@ -6019,14 +6104,20 @@ NODE_DEFINE(VectorMathNode)
   type_enum.insert("floor", NODE_VECTOR_MATH_FLOOR);
   type_enum.insert("ceil", NODE_VECTOR_MATH_CEIL);
   type_enum.insert("modulo", NODE_VECTOR_MATH_MODULO);
+  type_enum.insert("wrap", NODE_VECTOR_MATH_WRAP);
   type_enum.insert("fraction", NODE_VECTOR_MATH_FRACTION);
   type_enum.insert("absolute", NODE_VECTOR_MATH_ABSOLUTE);
   type_enum.insert("minimum", NODE_VECTOR_MATH_MINIMUM);
   type_enum.insert("maximum", NODE_VECTOR_MATH_MAXIMUM);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_VECTOR_MATH_ADD);
+
+  type_enum.insert("sine", NODE_VECTOR_MATH_SINE);
+  type_enum.insert("cosine", NODE_VECTOR_MATH_COSINE);
+  type_enum.insert("tangent", NODE_VECTOR_MATH_TANGENT);
+  SOCKET_ENUM(math_type, "Type", type_enum, NODE_VECTOR_MATH_ADD);
 
   SOCKET_IN_VECTOR(vector1, "Vector1", make_float3(0.0f, 0.0f, 0.0f));
   SOCKET_IN_VECTOR(vector2, "Vector2", make_float3(0.0f, 0.0f, 0.0f));
+  SOCKET_IN_VECTOR(vector3, "Vector3", make_float3(0.0f, 0.0f, 0.0f));
   SOCKET_IN_FLOAT(scale, "Scale", 1.0f);
 
   SOCKET_OUT_FLOAT(value, "Value");
@@ -6045,7 +6136,7 @@ void VectorMathNode::constant_fold(const ConstantFolder &folder)
   float3 vector = make_float3(0.0f, 0.0f, 0.0f);
 
   if (folder.all_inputs_constant()) {
-    svm_vector_math(&value, &vector, type, vector1, vector2, scale);
+    svm_vector_math(&value, &vector, math_type, vector1, vector2, vector3, scale);
     if (folder.output == output("Value")) {
       folder.make_constant(value);
     }
@@ -6054,7 +6145,7 @@ void VectorMathNode::constant_fold(const ConstantFolder &folder)
     }
   }
   else {
-    folder.fold_vector_math(type);
+    folder.fold_vector_math(math_type);
   }
 }
 
@@ -6072,17 +6163,87 @@ void VectorMathNode::compile(SVMCompiler &compiler)
   int value_stack_offset = compiler.stack_assign_if_linked(value_out);
   int vector_stack_offset = compiler.stack_assign_if_linked(vector_out);
 
-  compiler.add_node(
-      NODE_VECTOR_MATH,
-      type,
-      compiler.encode_uchar4(vector1_stack_offset, vector2_stack_offset, scale_stack_offset),
-      compiler.encode_uchar4(value_stack_offset, vector_stack_offset));
+  /* 3 Vector Operators */
+  if (math_type == NODE_VECTOR_MATH_WRAP) {
+    ShaderInput *vector3_in = input("Vector3");
+    int vector3_stack_offset = compiler.stack_assign(vector3_in);
+    compiler.add_node(
+        NODE_VECTOR_MATH,
+        math_type,
+        compiler.encode_uchar4(vector1_stack_offset, vector2_stack_offset, scale_stack_offset),
+        compiler.encode_uchar4(value_stack_offset, vector_stack_offset));
+    compiler.add_node(vector3_stack_offset);
+  }
+  else {
+    compiler.add_node(
+        NODE_VECTOR_MATH,
+        math_type,
+        compiler.encode_uchar4(vector1_stack_offset, vector2_stack_offset, scale_stack_offset),
+        compiler.encode_uchar4(value_stack_offset, vector_stack_offset));
+  }
 }
 
 void VectorMathNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "math_type");
   compiler.add(this, "node_vector_math");
+}
+
+/* Vector Rotate */
+
+NODE_DEFINE(VectorRotateNode)
+{
+  NodeType *type = NodeType::add("vector_rotate", create, NodeType::SHADER);
+
+  static NodeEnum type_enum;
+  type_enum.insert("axis", NODE_VECTOR_ROTATE_TYPE_AXIS);
+  type_enum.insert("x_axis", NODE_VECTOR_ROTATE_TYPE_AXIS_X);
+  type_enum.insert("y_axis", NODE_VECTOR_ROTATE_TYPE_AXIS_Y);
+  type_enum.insert("z_axis", NODE_VECTOR_ROTATE_TYPE_AXIS_Z);
+  type_enum.insert("euler_xyz", NODE_VECTOR_ROTATE_TYPE_EULER_XYZ);
+  SOCKET_ENUM(rotate_type, "Type", type_enum, NODE_VECTOR_ROTATE_TYPE_AXIS);
+
+  SOCKET_BOOLEAN(invert, "Invert", false);
+
+  SOCKET_IN_VECTOR(vector, "Vector", make_float3(0.0f, 0.0f, 0.0f));
+  SOCKET_IN_POINT(rotation, "Rotation", make_float3(0.0f, 0.0f, 0.0f));
+  SOCKET_IN_POINT(center, "Center", make_float3(0.0f, 0.0f, 0.0f));
+  SOCKET_IN_VECTOR(axis, "Axis", make_float3(0.0f, 0.0f, 1.0f));
+  SOCKET_IN_FLOAT(angle, "Angle", 0.0f);
+  SOCKET_OUT_VECTOR(vector, "Vector");
+
+  return type;
+}
+
+VectorRotateNode::VectorRotateNode() : ShaderNode(node_type)
+{
+}
+
+void VectorRotateNode::compile(SVMCompiler &compiler)
+{
+  ShaderInput *vector_in = input("Vector");
+  ShaderInput *rotation_in = input("Rotation");
+  ShaderInput *center_in = input("Center");
+  ShaderInput *axis_in = input("Axis");
+  ShaderInput *angle_in = input("Angle");
+  ShaderOutput *vector_out = output("Vector");
+
+  compiler.add_node(NODE_VECTOR_ROTATE,
+                    compiler.encode_uchar4(rotate_type,
+                                           compiler.stack_assign(vector_in),
+                                           compiler.stack_assign(rotation_in),
+                                           invert),
+                    compiler.encode_uchar4(compiler.stack_assign(center_in),
+                                           compiler.stack_assign(axis_in),
+                                           compiler.stack_assign(angle_in)),
+                    compiler.stack_assign(vector_out));
+}
+
+void VectorRotateNode::compile(OSLCompiler &compiler)
+{
+  compiler.parameter(this, "rotate_type");
+  compiler.parameter(this, "invert");
+  compiler.add(this, "node_vector_rotate");
 }
 
 /* VectorTransform */
@@ -6095,7 +6256,7 @@ NODE_DEFINE(VectorTransformNode)
   type_enum.insert("vector", NODE_VECTOR_TRANSFORM_TYPE_VECTOR);
   type_enum.insert("point", NODE_VECTOR_TRANSFORM_TYPE_POINT);
   type_enum.insert("normal", NODE_VECTOR_TRANSFORM_TYPE_NORMAL);
-  SOCKET_ENUM(type, "Type", type_enum, NODE_VECTOR_TRANSFORM_TYPE_VECTOR);
+  SOCKET_ENUM(transform_type, "Type", type_enum, NODE_VECTOR_TRANSFORM_TYPE_VECTOR);
 
   static NodeEnum space_enum;
   space_enum.insert("world", NODE_VECTOR_TRANSFORM_CONVERT_SPACE_WORLD);
@@ -6121,13 +6282,13 @@ void VectorTransformNode::compile(SVMCompiler &compiler)
 
   compiler.add_node(
       NODE_VECTOR_TRANSFORM,
-      compiler.encode_uchar4(type, convert_from, convert_to),
+      compiler.encode_uchar4(transform_type, convert_from, convert_to),
       compiler.encode_uchar4(compiler.stack_assign(vector_in), compiler.stack_assign(vector_out)));
 }
 
 void VectorTransformNode::compile(OSLCompiler &compiler)
 {
-  compiler.parameter(this, "type");
+  compiler.parameter(this, "transform_type");
   compiler.parameter(this, "convert_from");
   compiler.parameter(this, "convert_to");
   compiler.add(this, "node_vector_transform");
@@ -6200,7 +6361,7 @@ void BumpNode::constant_fold(const ConstantFolder &folder)
 
   if (height_in->link == NULL) {
     if (normal_in->link == NULL) {
-      GeometryNode *geom = new GeometryNode();
+      GeometryNode *geom = folder.graph->create_node<GeometryNode>();
       folder.graph->add(geom);
       folder.bypass(geom->output("Normal"));
     }
@@ -6483,12 +6644,12 @@ OSLNode::~OSLNode()
   delete type;
 }
 
-ShaderNode *OSLNode::clone() const
+ShaderNode *OSLNode::clone(ShaderGraph *graph) const
 {
-  return OSLNode::create(this->inputs.size(), this);
+  return OSLNode::create(graph, this->inputs.size(), this);
 }
 
-OSLNode *OSLNode::create(size_t num_inputs, const OSLNode *from)
+OSLNode *OSLNode::create(ShaderGraph *graph, size_t num_inputs, const OSLNode *from)
 {
   /* allocate space for the node itself and parameters, aligned to 16 bytes
    * assuming that's the most parameter types need */
@@ -6499,7 +6660,9 @@ OSLNode *OSLNode::create(size_t num_inputs, const OSLNode *from)
   memset(node_memory, 0, node_size + inputs_size);
 
   if (!from) {
-    return new (node_memory) OSLNode();
+    OSLNode *node = new (node_memory) OSLNode();
+    node->set_owner(graph);
+    return node;
   }
   else {
     /* copy input default values and node type for cloning */
@@ -6507,6 +6670,7 @@ OSLNode *OSLNode::create(size_t num_inputs, const OSLNode *from)
 
     OSLNode *node = new (node_memory) OSLNode(*from);
     node->type = new NodeType(*(from->type));
+    node->set_owner(from->owner);
     return node;
   }
 }

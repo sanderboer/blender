@@ -1,12 +1,8 @@
 #=============================================================================
 # Copyright 2014 Blender Foundation.
 #
-# Distributed under the OSI-approved BSD License (the "License");
-# see accompanying file Copyright.txt for details.
-#
-# This software is distributed WITHOUT ANY WARRANTY; without even the
-# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-# See the License for more information.
+# Distributed under the OSI-approved BSD 3-Clause License,
+# see accompanying file BSD-3-Clause-license.txt for details.
 #
 # Inspired on the Testing.cmake from Libmv
 #
@@ -37,12 +33,26 @@ macro(BLENDER_SRC_GTEST_EX)
     if(WIN32)
       set(MANIFEST "${CMAKE_BINARY_DIR}/tests.exe.manifest")
     endif()
+
+    add_definitions(-DBLENDER_GFLAGS_NAMESPACE=${GFLAGS_NAMESPACE})
+    add_definitions(${GFLAGS_DEFINES})
+    add_definitions(${GLOG_DEFINES})
+
     add_executable(${TARGET_NAME} ${ARG_SRC} ${MANIFEST})
+    setup_platform_linker_flags(${TARGET_NAME})
     target_include_directories(${TARGET_NAME} PUBLIC "${TEST_INC}")
     target_include_directories(${TARGET_NAME} SYSTEM PUBLIC "${TEST_INC_SYS}")
+    target_link_libraries(${TARGET_NAME} ${ARG_EXTRA_LIBS} ${PLATFORM_LINKLIBS})
+    if(WITH_TBB)
+      # Force TBB libraries to be in front of MKL (part of OpenImageDenoise), so
+      # that it is initialized before MKL and static library initialization order
+      # issues are avoided.
+      target_link_libraries(${TARGET_NAME} ${TBB_LIBRARIES})
+      if(WITH_OPENIMAGEDENOISE)
+        target_link_libraries(${TARGET_NAME} ${OPENIMAGEDENOISE_LIBRARIES})
+      endif()
+    endif()
     target_link_libraries(${TARGET_NAME}
-                          ${ARG_EXTRA_LIBS}
-                          ${PLATFORM_LINKLIBS}
                           bf_testing_main
                           bf_intern_eigen
                           bf_intern_guardedalloc
@@ -54,6 +64,15 @@ macro(BLENDER_SRC_GTEST_EX)
                           ${GFLAGS_LIBRARIES})
     if(WITH_OPENMP_STATIC)
       target_link_libraries(${TARGET_NAME} ${OpenMP_LIBRARIES})
+    endif()
+    if(UNIX AND NOT APPLE)
+      target_link_libraries(${TARGET_NAME} bf_intern_libc_compat)
+    endif()
+    if(WITH_TBB)
+      target_link_libraries(${TARGET_NAME} ${TBB_LIBRARIES})
+    endif()
+    if(WITH_GMP)
+      target_link_libraries(${TARGET_NAME} ${GMP_LIBRARIES})
     endif()
 
     get_property(GENERATOR_IS_MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -78,6 +97,7 @@ macro(BLENDER_SRC_GTEST_EX)
       set_tests_properties(${TARGET_NAME} PROPERTIES ENVIRONMENT LSAN_OPTIONS=exitcode=0)
     endif()
     if(WIN32)
+      set_target_properties(${TARGET_NAME} PROPERTIES VS_GLOBAL_VcpkgEnabled "false")
       unset(MANIFEST)
     endif()
     unset(TEST_INC)

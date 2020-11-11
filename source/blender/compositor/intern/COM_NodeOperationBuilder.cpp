@@ -16,31 +16,29 @@
  * Copyright 2013, Blender Foundation.
  */
 
-extern "C" {
 #include "BLI_utildefines.h"
-}
 
-#include "COM_NodeConverter.h"
 #include "COM_Converter.h"
 #include "COM_Debug.h"
 #include "COM_ExecutionSystem.h"
 #include "COM_Node.h"
+#include "COM_NodeConverter.h"
 #include "COM_SocketProxyNode.h"
 
 #include "COM_NodeOperation.h"
 #include "COM_PreviewOperation.h"
+#include "COM_ReadBufferOperation.h"
+#include "COM_SetColorOperation.h"
 #include "COM_SetValueOperation.h"
 #include "COM_SetVectorOperation.h"
-#include "COM_SetColorOperation.h"
 #include "COM_SocketProxyOperation.h"
-#include "COM_ReadBufferOperation.h"
-#include "COM_WriteBufferOperation.h"
 #include "COM_ViewerOperation.h"
+#include "COM_WriteBufferOperation.h"
 
 #include "COM_NodeOperationBuilder.h" /* own include */
 
 NodeOperationBuilder::NodeOperationBuilder(const CompositorContext *context, bNodeTree *b_nodetree)
-    : m_context(context), m_current_node(NULL), m_active_viewer(NULL)
+    : m_context(context), m_current_node(nullptr), m_active_viewer(nullptr)
 {
   m_graph.from_bNodeTree(*context, b_nodetree);
 }
@@ -63,7 +61,7 @@ void NodeOperationBuilder::convertToOperations(ExecutionSystem *system)
     node->convertToOperations(converter, *m_context);
   }
 
-  m_current_node = NULL;
+  m_current_node = nullptr;
 
   /* The input map constructed by nodes maps operation inputs to node inputs.
    * Inverting yields a map of node inputs to all connected operation inputs,
@@ -100,9 +98,9 @@ void NodeOperationBuilder::convertToOperations(ExecutionSystem *system)
 
   add_operation_input_constants();
 
-  add_datatype_conversions();
-
   resolve_proxies();
+
+  add_datatype_conversions();
 
   determineResolutions();
 
@@ -170,7 +168,7 @@ void NodeOperationBuilder::removeInputLink(NodeOperationInput *to)
     Link &link = *it;
     if (link.to() == to) {
       /* unregister with the input */
-      to->setLink(NULL);
+      to->setLink(nullptr);
 
       m_links.erase(it);
       return;
@@ -205,15 +203,15 @@ PreviewOperation *NodeOperationBuilder::make_preview_operation() const
   BLI_assert(m_current_node);
 
   if (!(m_current_node->getbNode()->flag & NODE_PREVIEW)) {
-    return NULL;
+    return nullptr;
   }
   /* previews only in the active group */
   if (!m_current_node->isInActiveGroup()) {
-    return NULL;
+    return nullptr;
   }
   /* do not calculate previews of hidden nodes */
   if (m_current_node->getbNode()->flag & NODE_HIDDEN) {
-    return NULL;
+    return nullptr;
   }
 
   bNodeInstanceHash *previews = m_context->getPreviewHash();
@@ -225,7 +223,7 @@ PreviewOperation *NodeOperationBuilder::make_preview_operation() const
     return operation;
   }
 
-  return NULL;
+  return nullptr;
 }
 
 void NodeOperationBuilder::addPreview(NodeOperationOutput *output)
@@ -478,7 +476,7 @@ WriteBufferOperation *NodeOperationBuilder::find_attached_write_buffer_operation
       }
     }
   }
-  return NULL;
+  return nullptr;
 }
 
 void NodeOperationBuilder::add_input_buffers(NodeOperation * /*operation*/,
@@ -528,13 +526,13 @@ void NodeOperationBuilder::add_output_buffers(NodeOperation *operation,
     return;
   }
 
-  WriteBufferOperation *writeOperation = NULL;
+  WriteBufferOperation *writeOperation = nullptr;
   for (OpInputs::const_iterator it = targets.begin(); it != targets.end(); ++it) {
     NodeOperationInput *target = *it;
 
     /* try to find existing write buffer operation */
     if (target->getOperation().isWriteBufferOperation()) {
-      BLI_assert(writeOperation == NULL); /* there should only be one write op connected */
+      BLI_assert(writeOperation == nullptr); /* there should only be one write op connected */
       writeOperation = (WriteBufferOperation *)(&target->getOperation());
     }
     else {
@@ -730,7 +728,7 @@ void NodeOperationBuilder::group_operations()
       ReadBufferOperation *read_op = (ReadBufferOperation *)op;
       MemoryProxy *memproxy = read_op->getMemoryProxy();
 
-      if (memproxy->getExecutor() == NULL) {
+      if (memproxy->getExecutor() == nullptr) {
         ExecutionGroup *group = make_group(memproxy->getWriteBufferOperation());
         memproxy->setExecutor(group);
       }

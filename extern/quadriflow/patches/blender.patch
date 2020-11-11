@@ -1,3 +1,15 @@
+diff --git a/extern/quadriflow/src/loader.cpp b/extern/quadriflow/src/loader.cpp
+--- a/extern/quadriflow/src/loader.cpp
++++ b/extern/quadriflow/src/loader.cpp
+@@ -69,7 +69,7 @@
+        };
+
+        /// Hash function for obj_vertex
+-       struct obj_vertexHash : std::unary_function<obj_vertex, size_t> {
++       struct obj_vertexHash {
+                std::size_t operator()(const obj_vertex &v) const {
+                        size_t hash = std::hash<uint32_t>()(v.p);
+                        hash = hash * 37 + std::hash<uint32_t>()(v.uv);
 diff --git a/extern/quadriflow/src/config.hpp b/extern/quadriflow/src/config.hpp
 index 842b885..bf597ad 100644
 --- a/extern/quadriflow/src/config.hpp
@@ -116,3 +128,18 @@ index c333256..8cc41da 100644
  
          for (uint32_t i = 0; i != mV[l + 1].cols(); ++i) {
              Vector2i upper = toUpper.col(i);
+diff --git a/extern/quadriflow/3rd/lemon-1.3.1/lemon/random.h b/extern/quadriflow/3rd/lemon-1.3.1/lemon/random.h
+index 8de74ede8a9..f9861f39169 100644
+--- a/extern/quadriflow/3rd/lemon-1.3.1/lemon/random.h
++++ b/extern/quadriflow/3rd/lemon-1.3.1/lemon/random.h
+@@ -249,8 +249,8 @@ namespace lemon {
+ 
+         current = state + length;
+ 
+-        register Word *curr = state + length - 1;
+-        register long num;
++        Word *curr = state + length - 1;
++        long num;
+ 
+         num = length - shift;
+         while (num--) {

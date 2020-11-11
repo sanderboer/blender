@@ -43,7 +43,7 @@ static float3 compute_face_normal(const Mesh::Triangle &t, float3 *verts)
   return norm / normlen;
 }
 
-bool MeshManager::displace(
+bool GeometryManager::displace(
     Device *device, DeviceScene *dscene, Scene *scene, Mesh *mesh, Progress &progress)
 {
   /* verify if we have a displacement shader */
@@ -58,7 +58,7 @@ bool MeshManager::displace(
   size_t object_index = OBJECT_NONE;
 
   for (size_t i = 0; i < scene->objects.size(); i++) {
-    if (scene->objects[i]->mesh == mesh) {
+    if (scene->objects[i]->get_geometry() == mesh) {
       object_index = i;
       break;
     }
@@ -76,10 +76,10 @@ bool MeshManager::displace(
     Mesh::Triangle t = mesh->get_triangle(i);
     int shader_index = mesh->shader[i];
     Shader *shader = (shader_index < mesh->used_shaders.size()) ?
-                         mesh->used_shaders[shader_index] :
+                         static_cast<Shader *>(mesh->used_shaders[shader_index]) :
                          scene->default_surface;
 
-    if (!shader->has_displacement || shader->displacement_method == DISPLACE_BUMP) {
+    if (!shader->has_displacement || shader->get_displacement_method() == DISPLACE_BUMP) {
       continue;
     }
 
@@ -91,7 +91,7 @@ bool MeshManager::displace(
 
       /* set up object, primitive and barycentric coordinates */
       int object = object_index;
-      int prim = mesh->tri_offset + i;
+      int prim = mesh->prim_offset + i;
       float u, v;
 
       switch (j) {
@@ -160,10 +160,10 @@ bool MeshManager::displace(
     Mesh::Triangle t = mesh->get_triangle(i);
     int shader_index = mesh->shader[i];
     Shader *shader = (shader_index < mesh->used_shaders.size()) ?
-                         mesh->used_shaders[shader_index] :
+                         static_cast<Shader *>(mesh->used_shaders[shader_index]) :
                          scene->default_surface;
 
-    if (!shader->has_displacement || shader->displacement_method == DISPLACE_BUMP) {
+    if (!shader->has_displacement || shader->get_displacement_method() == DISPLACE_BUMP) {
       continue;
     }
 
@@ -227,8 +227,9 @@ bool MeshManager::displace(
 
   bool need_recompute_vertex_normals = false;
 
-  foreach (Shader *shader, mesh->used_shaders) {
-    if (shader->has_displacement && shader->displacement_method == DISPLACE_TRUE) {
+  foreach (Node *node, mesh->get_used_shaders()) {
+    Shader *shader = static_cast<Shader *>(node);
+    if (shader->has_displacement && shader->get_displacement_method() == DISPLACE_TRUE) {
       need_recompute_vertex_normals = true;
       break;
     }
@@ -241,11 +242,11 @@ bool MeshManager::displace(
     for (size_t i = 0; i < num_triangles; i++) {
       int shader_index = mesh->shader[i];
       Shader *shader = (shader_index < mesh->used_shaders.size()) ?
-                           mesh->used_shaders[shader_index] :
+                           static_cast<Shader *>(mesh->used_shaders[shader_index]) :
                            scene->default_surface;
 
       tri_has_true_disp[i] = shader->has_displacement &&
-                             shader->displacement_method == DISPLACE_TRUE;
+                             shader->get_displacement_method() == DISPLACE_TRUE;
     }
 
     /* static vertex normals */

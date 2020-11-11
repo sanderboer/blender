@@ -27,8 +27,8 @@
 #include <cstdio>
 #include <cstdlib>
 
-#include "BLI_utildefines.h"
 #include "BLI_stack.h"
+#include "BLI_utildefines.h"
 
 #include "intern/node/deg_node.h"
 #include "intern/node/deg_node_component.h"
@@ -37,7 +37,7 @@
 #include "intern/depsgraph.h"
 #include "intern/depsgraph_relation.h"
 
-namespace DEG {
+namespace blender::deg {
 
 namespace {
 
@@ -76,22 +76,22 @@ struct CyclesSolverState {
   int num_cycles;
 };
 
-BLI_INLINE void set_node_visited_state(Node *node, eCyclicCheckVisitedState state)
+inline void set_node_visited_state(Node *node, eCyclicCheckVisitedState state)
 {
   node->custom_flags = (node->custom_flags & ~0x3) | (int)state;
 }
 
-BLI_INLINE eCyclicCheckVisitedState get_node_visited_state(Node *node)
+inline eCyclicCheckVisitedState get_node_visited_state(Node *node)
 {
   return (eCyclicCheckVisitedState)(node->custom_flags & 0x3);
 }
 
-BLI_INLINE void set_node_num_visited_children(Node *node, int num_children)
+inline void set_node_num_visited_children(Node *node, int num_children)
 {
   node->custom_flags = (node->custom_flags & 0x3) | (num_children << 2);
 }
 
-BLI_INLINE int get_node_num_visited_children(Node *node)
+inline int get_node_num_visited_children(Node *node)
 {
   return node->custom_flags >> 2;
 }
@@ -100,8 +100,8 @@ void schedule_node_to_stack(CyclesSolverState *state, OperationNode *node)
 {
   StackEntry entry;
   entry.node = node;
-  entry.from = NULL;
-  entry.via_relation = NULL;
+  entry.from = nullptr;
+  entry.via_relation = nullptr;
   BLI_stack_push(state->traversal_stack, &entry);
   set_node_visited_state(node, NODE_IN_STACK);
 }
@@ -187,7 +187,7 @@ void solve_cycles(CyclesSolverState *state)
                              node->full_identifier() + " via '" + rel->name + "'\n";
           StackEntry *current = entry;
           while (current->node != to) {
-            BLI_assert(current != NULL);
+            BLI_assert(current != nullptr);
             cycle_str += "  " + current->from->node->full_identifier() + " via '" +
                          current->via_relation->name + "'\n";
             current = current->from;
@@ -234,4 +234,4 @@ void deg_graph_detect_cycles(Depsgraph *graph)
   }
 }
 
-}  // namespace DEG
+}  // namespace blender::deg

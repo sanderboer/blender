@@ -26,8 +26,8 @@
 
 #include "DNA_space_types.h"
 
-#include "BLI_rect.h"
 #include "BLI_math_base.h"
+#include "BLI_rect.h"
 
 #include "UI_resources.h"
 
@@ -46,6 +46,30 @@ void WM_operator_properties_confirm_or_exec(wmOperatorType *ot)
 
   prop = RNA_def_boolean(ot->srna, "confirm", true, "Confirm", "Prompt for confirmation");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+}
+
+/**
+ * Extends rna_enum_fileselect_params_sort_items with a default item for operators to use.
+ */
+static const EnumPropertyItem *wm_operator_properties_filesel_sort_items_itemf(
+    struct bContext *UNUSED(C), PointerRNA *UNUSED(ptr), PropertyRNA *UNUSED(prop), bool *r_free)
+{
+  EnumPropertyItem *items;
+  const EnumPropertyItem default_item = {
+      FILE_SORT_DEFAULT,
+      "DEFAULT",
+      0,
+      "Default",
+      "Automatically determine sort method for files",
+  };
+  int totitem = 0;
+
+  RNA_enum_item_add(&items, &totitem, &default_item);
+  RNA_enum_items_add(&items, &totitem, rna_enum_fileselect_params_sort_items);
+  RNA_enum_item_end(&items, &totitem);
+  *r_free = true;
+
+  return items;
 }
 
 /* default properties for fileselect */
@@ -157,8 +181,15 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
       ot->srna, "filter_alembic", (filter & FILE_TYPE_ALEMBIC) != 0, "Filter Alembic files", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
       ot->srna, "filter_usd", (filter & FILE_TYPE_USD) != 0, "Filter USD files", "");
+  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+  prop = RNA_def_boolean(ot->srna,
+                         "filter_volume",
+                         (filter & FILE_TYPE_VOLUME) != 0,
+                         "Filter OpenVDB volume files",
+                         "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_boolean(
       ot->srna, "filter_folder", (filter & FILE_TYPE_FOLDER) != 0, "Filter folders", "");
@@ -197,8 +228,8 @@ void WM_operator_properties_filesel(wmOperatorType *ot,
   prop = RNA_def_enum(ot->srna, "display_type", file_display_items, display, "Display Type", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
 
-  prop = RNA_def_enum(
-      ot->srna, "sort_method", rna_enum_file_sort_items, sort, "File sorting mode", "");
+  prop = RNA_def_enum(ot->srna, "sort_method", DummyRNA_NULL_items, sort, "File sorting mode", "");
+  RNA_def_enum_funcs(prop, wm_operator_properties_filesel_sort_items_itemf);
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
 }
 
@@ -253,12 +284,12 @@ void WM_operator_properties_select_random(wmOperatorType *ot)
 {
   RNA_def_float_percentage(ot->srna,
                            "percent",
-                           50.f,
+                           50.0f,
                            0.0f,
                            100.0f,
                            "Percent",
                            "Percentage of objects to select randomly",
-                           0.f,
+                           0.0f,
                            100.0f);
   RNA_def_int(ot->srna,
               "seed",
@@ -398,6 +429,25 @@ void WM_operator_properties_select_operation_simple(wmOperatorType *ot)
   RNA_def_property_flag(prop, PROP_SKIP_SAVE);
 }
 
+void WM_operator_properties_select_walk_direction(wmOperatorType *ot)
+{
+  static const EnumPropertyItem direction_items[] = {
+      {UI_SELECT_WALK_UP, "UP", 0, "Prev", ""},
+      {UI_SELECT_WALK_DOWN, "DOWN", 0, "Next", ""},
+      {UI_SELECT_WALK_LEFT, "LEFT", 0, "Left", ""},
+      {UI_SELECT_WALK_RIGHT, "RIGHT", 0, "Right", ""},
+      {0, NULL, 0, NULL, NULL},
+  };
+  PropertyRNA *prop;
+  prop = RNA_def_enum(ot->srna,
+                      "direction",
+                      direction_items,
+                      0,
+                      "Walk Direction",
+                      "Select/Deselect element in this direction");
+  RNA_def_property_flag(prop, PROP_SKIP_SAVE);
+}
+
 /**
  * Selecting and tweaking items are overlapping operations. Getting both to work without conflicts
  * requires special care. See
@@ -420,8 +470,8 @@ void WM_operator_properties_select_operation_simple(wmOperatorType *ot)
  * help getting the wanted behavior to work. Most generic logic should be handled in these, so that
  * the select operators only have to care for the case dependent handling.
  *
- * Every select operator has slightly different requirements, e.g. VSE strip selection also needs
- * to account for handle selection. This should be the baseline behavior though.
+ * Every select operator has slightly different requirements, e.g. sequencer strip selection
+ * also needs to account for handle selection. This should be the baseline behavior though.
  */
 void WM_operator_properties_generic_select(wmOperatorType *ot)
 {
@@ -471,6 +521,8 @@ void WM_operator_properties_gesture_straightline(wmOperatorType *ot, int cursor)
   prop = RNA_def_int(ot->srna, "ystart", 0, INT_MIN, INT_MAX, "Y Start", "", INT_MIN, INT_MAX);
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
   prop = RNA_def_int(ot->srna, "yend", 0, INT_MIN, INT_MAX, "Y End", "", INT_MIN, INT_MAX);
+  RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
+  prop = RNA_def_boolean(ot->srna, "flip", false, "Flip", "");
   RNA_def_property_flag(prop, PROP_HIDDEN | PROP_SKIP_SAVE);
 
   if (cursor) {

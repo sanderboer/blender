@@ -23,21 +23,21 @@
  * \ingroup GHOST
  */
 
-#include <X11/Xatom.h>
-#include <X11/keysym.h>
 #include <X11/XKBlib.h> /* allow detectable autorepeate */
+#include <X11/Xatom.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 
-#include "GHOST_SystemX11.h"
-#include "GHOST_WindowX11.h"
-#include "GHOST_WindowManager.h"
-#include "GHOST_TimerManager.h"
-#include "GHOST_EventCursor.h"
-#include "GHOST_EventKey.h"
-#include "GHOST_EventButton.h"
-#include "GHOST_EventWheel.h"
 #include "GHOST_DisplayManagerX11.h"
+#include "GHOST_EventButton.h"
+#include "GHOST_EventCursor.h"
 #include "GHOST_EventDragnDrop.h"
+#include "GHOST_EventKey.h"
+#include "GHOST_EventWheel.h"
+#include "GHOST_SystemX11.h"
+#include "GHOST_TimerManager.h"
+#include "GHOST_WindowManager.h"
+#include "GHOST_WindowX11.h"
 #ifdef WITH_INPUT_NDOF
 #  include "GHOST_NDOFManagerUnix.h"
 #endif
@@ -50,6 +50,7 @@
 
 #if defined(WITH_GL_EGL)
 #  include "GHOST_ContextEGL.h"
+#  include <EGL/eglext.h>
 #else
 #  include "GHOST_ContextGLX.h"
 #endif
@@ -73,10 +74,10 @@
 #include <sys/time.h>
 #include <unistd.h>
 
-#include <iostream>
-#include <vector>
-#include <stdio.h> /* for fprintf only */
 #include <cstdlib> /* for exit */
+#include <iostream>
+#include <stdio.h> /* for fprintf only */
+#include <vector>
 
 /* for debugging - so we can breakpoint X11 errors */
 // #define USE_X11_ERROR_HANDLERS
@@ -85,12 +86,17 @@
 #  define USE_XINPUT_HOTPLUG
 #endif
 
-/* see [#34039] Fix Alt key glitch on Unity desktop */
+/* see T34039 Fix Alt key glitch on Unity desktop */
 #define USE_UNITY_WORKAROUND
 
 /* Fix 'shortcut' part of keyboard reading code only ever using first defined keymap
  * instead of active one. See T47228 and D1746 */
 #define USE_NON_LATIN_KB_WORKAROUND
+
+static uchar bit_is_on(const uchar *ptr, int bit)
+{
+  return ptr[bit >> 3] & (1 << (bit & 7));
+}
 
 static GHOST_TKey ghost_key_from_keysym(const KeySym key);
 static GHOST_TKey ghost_key_from_keycode(const XkbDescPtr xkb_descr, const KeyCode keycode);
@@ -169,7 +175,8 @@ GHOST_SystemX11::GHOST_SystemX11() : GHOST_System(), m_xkb_descr(NULL), m_start_
 #undef GHOST_INTERN_ATOM_IF_EXISTS
 #undef GHOST_INTERN_ATOM
 
-  m_last_warp = 0;
+  m_last_warp_x = 0;
+  m_last_warp_y = 0;
   m_last_release_keycode = 0;
   m_last_release_time = 0;
 
@@ -195,6 +202,7 @@ GHOST_SystemX11::GHOST_SystemX11() : GHOST_System(), m_xkb_descr(NULL), m_start_
     m_xkb_descr = XkbGetMap(m_display, 0, XkbUseCoreKbd);
     if (m_xkb_descr) {
       XkbGetNames(m_display, XkbKeyNamesMask, m_xkb_descr);
+      XkbGetControls(m_display, XkbPerKeyRepeatMask | XkbRepeatKeysMask, m_xkb_descr);
     }
   }
 
@@ -242,6 +250,10 @@ GHOST_SystemX11::~GHOST_SystemX11()
   /* Close tablet devices. */
   clearXInputDevices();
 #endif /* WITH_X11_XINPUT */
+
+#ifdef WITH_GL_EGL
+  ::eglTerminate(::eglGetDisplay(m_display));
+#endif
 
   if (m_xkb_descr) {
     XkbFreeKeyboard(m_xkb_descr, XkbAllComponentsMask, true);
@@ -313,21 +325,21 @@ void GHOST_SystemX11::getAllDisplayDimensions(GHOST_TUns32 &width, GHOST_TUns32 
 /**
  * Create a new window.
  * The new window is added to the list of windows managed.
- * Never explicitly delete the window, use disposeWindow() instead.
- * \param   title   The name of the window
+ * Never explicitly delete the window, use #disposeWindow() instead.
+ * \param title: The name of the window
  * (displayed in the title bar of the window if the OS supports it).
- * \param   left    The coordinate of the left edge of the window.
- * \param   top     The coordinate of the top edge of the window.
- * \param   width   The width the window.
- * \param   height  The height the window.
- * \param   state   The state of the window when opened.
- * \param   type    The type of drawing context installed in this window.
+ * \param left: The coordinate of the left edge of the window.
+ * \param top: The coordinate of the top edge of the window.
+ * \param width: The width the window.
+ * \param height: The height the window.
+ * \param state: The state of the window when opened.
+ * \param type: The type of drawing context installed in this window.
  * \param glSettings: Misc OpenGL settings.
- * \param exclusive: Use to show the window ontop and ignore others (used fullscreen).
- * \param   parentWindow    Parent window
- * \return  The new window (or 0 if creation failed).
+ * \param exclusive: Use to show the window on top and ignore others (used full-screen).
+ * \param parentWindow: Parent window.
+ * \return The new window (or 0 if creation failed).
  */
-GHOST_IWindow *GHOST_SystemX11::createWindow(const STR_String &title,
+GHOST_IWindow *GHOST_SystemX11::createWindow(const char *title,
                                              GHOST_TInt32 left,
                                              GHOST_TInt32 top,
                                              GHOST_TUns32 width,
@@ -381,9 +393,9 @@ GHOST_IWindow *GHOST_SystemX11::createWindow(const STR_String &title,
 /**
  * Create a new offscreen context.
  * Never explicitly delete the context, use disposeContext() instead.
- * \return  The new context (or 0 if creation failed).
+ * \return The new context (or 0 if creation failed).
  */
-GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
+GHOST_IContext *GHOST_SystemX11::createOffscreenContext(GHOST_GLSettings glSettings)
 {
   // During development:
   //   try 4.x compatibility profile
@@ -394,6 +406,8 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
   //   try 4.x core profile
   //   try 3.3 core profile
   //   no fallbacks
+
+  const bool debug_context = (glSettings.flags & GHOST_glDebugContext) != 0;
 
 #if defined(WITH_GL_PROFILE_CORE)
   {
@@ -406,17 +420,39 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
 #endif
 
   const int profile_mask =
-#if defined(WITH_GL_PROFILE_CORE)
-      GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
-#elif defined(WITH_GL_PROFILE_COMPAT)
-      GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
+#ifdef WITH_GL_EGL
+#  if defined(WITH_GL_PROFILE_CORE)
+      EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT;
+#  elif defined(WITH_GL_PROFILE_COMPAT)
+      EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT;
+#  else
+#    error  // must specify either core or compat at build time
+#  endif
 #else
-#  error  // must specify either core or compat at build time
+#  if defined(WITH_GL_PROFILE_CORE)
+      GLX_CONTEXT_CORE_PROFILE_BIT_ARB;
+#  elif defined(WITH_GL_PROFILE_COMPAT)
+      GLX_CONTEXT_COMPATIBILITY_PROFILE_BIT_ARB;
+#  else
+#    error  // must specify either core or compat at build time
+#  endif
 #endif
 
   GHOST_Context *context;
 
   for (int minor = 5; minor >= 0; --minor) {
+#if defined(WITH_GL_EGL)
+    context = new GHOST_ContextEGL(false,
+                                   EGLNativeWindowType(nullptr),
+                                   EGLNativeDisplayType(m_display),
+                                   profile_mask,
+                                   4,
+                                   minor,
+                                   GHOST_OPENGL_EGL_CONTEXT_FLAGS |
+                                       (debug_context ? EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR : 0),
+                                   GHOST_OPENGL_EGL_RESET_NOTIFICATION_STRATEGY,
+                                   EGL_OPENGL_API);
+#else
     context = new GHOST_ContextGLX(false,
                                    (Window)NULL,
                                    m_display,
@@ -425,8 +461,9 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
                                    4,
                                    minor,
                                    GHOST_OPENGL_GLX_CONTEXT_FLAGS |
-                                       (false ? GLX_CONTEXT_DEBUG_BIT_ARB : 0),
+                                       (debug_context ? GLX_CONTEXT_DEBUG_BIT_ARB : 0),
                                    GHOST_OPENGL_GLX_RESET_NOTIFICATION_STRATEGY);
+#endif
 
     if (context->initializeDrawingContext())
       return context;
@@ -434,6 +471,18 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
       delete context;
   }
 
+#if defined(WITH_GL_EGL)
+  context = new GHOST_ContextEGL(false,
+                                 EGLNativeWindowType(nullptr),
+                                 EGLNativeDisplayType(m_display),
+                                 profile_mask,
+                                 3,
+                                 3,
+                                 GHOST_OPENGL_EGL_CONTEXT_FLAGS |
+                                     (debug_context ? EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR : 0),
+                                 GHOST_OPENGL_EGL_RESET_NOTIFICATION_STRATEGY,
+                                 EGL_OPENGL_API);
+#else
   context = new GHOST_ContextGLX(false,
                                  (Window)NULL,
                                  m_display,
@@ -442,8 +491,9 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
                                  3,
                                  3,
                                  GHOST_OPENGL_GLX_CONTEXT_FLAGS |
-                                     (false ? GLX_CONTEXT_DEBUG_BIT_ARB : 0),
+                                     (debug_context ? GLX_CONTEXT_DEBUG_BIT_ARB : 0),
                                  GHOST_OPENGL_GLX_RESET_NOTIFICATION_STRATEGY);
+#endif
 
   if (context->initializeDrawingContext())
     return context;
@@ -455,8 +505,8 @@ GHOST_IContext *GHOST_SystemX11::createOffscreenContext()
 
 /**
  * Dispose of a context.
- * \param   context Pointer to the context to be disposed.
- * \return  Indication of success.
+ * \param context: Pointer to the context to be disposed.
+ * \return Indication of success.
  */
 GHOST_TSuccess GHOST_SystemX11::disposeContext(GHOST_IContext *context)
 {
@@ -505,9 +555,9 @@ GHOST_WindowX11 *GHOST_SystemX11::findGhostWindow(Window xwind) const
    * We should always check the window manager's list of windows
    * and only process events on these windows. */
 
-  vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
+  const vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
 
-  vector<GHOST_IWindow *>::iterator win_it = win_vec.begin();
+  vector<GHOST_IWindow *>::const_iterator win_it = win_vec.begin();
   vector<GHOST_IWindow *>::const_iterator win_end = win_vec.end();
 
   for (; win_it != win_end; ++win_it) {
@@ -649,8 +699,8 @@ bool GHOST_SystemX11::processEvents(bool waitForEvent)
         continue;
       }
 #endif
-      /* when using autorepeat, some keypress events can actually come *after* the
-       * last keyrelease. The next code takes care of that */
+      /* When using auto-repeat, some key-press events can actually come *after* the
+       * last key-release. The next code takes care of that. */
       if (xevent.type == KeyRelease) {
         m_last_release_keycode = xevent.xkey.keycode;
         m_last_release_time = xevent.xkey.time;
@@ -706,7 +756,8 @@ bool GHOST_SystemX11::processEvents(bool waitForEvent)
                                                window,
                                                ghost_key_from_keysym(modifiers[i]),
                                                '\0',
-                                               NULL));
+                                               NULL,
+                                               false));
                 }
               }
             }
@@ -781,6 +832,64 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
   GHOST_WindowX11 *window = findGhostWindow(xe->xany.window);
   GHOST_Event *g_event = NULL;
 
+  /* Detect auto-repeat. */
+  bool is_repeat = false;
+  if (xe->type == KeyPress || xe->type == KeyRelease) {
+    XKeyEvent *xke = &(xe->xkey);
+
+    /* Set to true if this key will repeat. */
+    bool is_repeat_keycode = false;
+
+    if (m_xkb_descr != NULL) {
+      /* Use XKB support. */
+      is_repeat_keycode = (
+          /* Should always be true, check just in case. */
+          (xke->keycode < (XkbPerKeyBitArraySize << 3)) &&
+          bit_is_on(m_xkb_descr->ctrls->per_key_repeat, xke->keycode));
+    }
+    else {
+      /* No XKB support (filter by modifier). */
+      switch (XLookupKeysym(xke, 0)) {
+        case XK_Shift_L:
+        case XK_Shift_R:
+        case XK_Control_L:
+        case XK_Control_R:
+        case XK_Alt_L:
+        case XK_Alt_R:
+        case XK_Super_L:
+        case XK_Super_R:
+        case XK_Hyper_L:
+        case XK_Hyper_R:
+        case XK_Caps_Lock:
+        case XK_Scroll_Lock:
+        case XK_Num_Lock: {
+          break;
+        }
+        default: {
+          is_repeat_keycode = true;
+        }
+      }
+    }
+
+    if (is_repeat_keycode) {
+      if (xe->type == KeyPress) {
+        if (m_keycode_last_repeat_key == xke->keycode) {
+          is_repeat = true;
+        }
+        m_keycode_last_repeat_key = xke->keycode;
+      }
+      else {
+        if (m_keycode_last_repeat_key == xke->keycode) {
+          m_keycode_last_repeat_key = (uint)-1;
+        }
+      }
+    }
+  }
+  else if (xe->type == EnterNotify) {
+    /* We can't tell how the key state changed, clear it to avoid stuck keys. */
+    m_keycode_last_repeat_key = (uint)-1;
+  }
+
 #ifdef USE_XINPUT_HOTPLUG
   /* Hot-Plug support */
   if (m_xinput_version.present) {
@@ -799,13 +908,13 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
 
         /* update all window events */
         {
-          vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
-          vector<GHOST_IWindow *>::iterator win_it = win_vec.begin();
+          const vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
+          vector<GHOST_IWindow *>::const_iterator win_it = win_vec.begin();
           vector<GHOST_IWindow *>::const_iterator win_end = win_vec.end();
 
           for (; win_it != win_end; ++win_it) {
-            GHOST_WindowX11 *window = static_cast<GHOST_WindowX11 *>(*win_it);
-            window->refreshXInputDevices();
+            GHOST_WindowX11 *window_xinput = static_cast<GHOST_WindowX11 *>(*win_it);
+            window_xinput->refreshXInputDevices();
           }
         }
       }
@@ -854,11 +963,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
     case MotionNotify: {
       XMotionEvent &xme = xe->xmotion;
 
-#ifdef WITH_X11_XINPUT
       bool is_tablet = window->GetTabletData().Active != GHOST_kTabletModeNone;
-#else
-      bool is_tablet = false;
-#endif
 
       if (is_tablet == false && window->getCursorGrabModeIsWarp()) {
         GHOST_TInt32 x_new = xme.x_root;
@@ -877,29 +982,41 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
         window->getCursorGrabAccum(x_accum, y_accum);
 
         if (x_new != xme.x_root || y_new != xme.y_root) {
-          if (xme.time > m_last_warp) {
-            /* when wrapping we don't need to add an event because the
-             * setCursorPosition call will cause a new event after */
-            setCursorPosition(x_new, y_new); /* wrap */
-            window->setCursorGrabAccum(x_accum + (xme.x_root - x_new),
-                                       y_accum + (xme.y_root - y_new));
-            m_last_warp = lastEventTime(xme.time);
+          /* Use time of last event to avoid wrapping several times on the 'same' actual wrap.
+           * Note that we need to deal with X and Y separately as those might wrap at the same time
+           * but still in two different events (corner case, see T74918).
+           * We also have to add a few extra milliseconds of 'padding', as sometimes we get two
+           * close events that will generate extra wrap on the same axis within those few
+           * milliseconds. */
+          if (x_new != xme.x_root && xme.time > m_last_warp_x) {
+            x_accum += (xme.x_root - x_new);
+            m_last_warp_x = lastEventTime(xme.time) + 25;
           }
-          else {
-            setCursorPosition(x_new, y_new); /* wrap but don't accumulate */
+          if (y_new != xme.y_root && xme.time > m_last_warp_y) {
+            y_accum += (xme.y_root - y_new);
+            m_last_warp_y = lastEventTime(xme.time) + 25;
           }
+          window->setCursorGrabAccum(x_accum, y_accum);
+          /* When wrapping we don't need to add an event because the
+           * #setCursorPosition call will cause a new event after. */
+          setCursorPosition(x_new, y_new); /* wrap */
         }
         else {
           g_event = new GHOST_EventCursor(getMilliSeconds(),
                                           GHOST_kEventCursorMove,
                                           window,
                                           xme.x_root + x_accum,
-                                          xme.y_root + y_accum);
+                                          xme.y_root + y_accum,
+                                          window->GetTabletData());
         }
       }
       else {
-        g_event = new GHOST_EventCursor(
-            getMilliSeconds(), GHOST_kEventCursorMove, window, xme.x_root, xme.y_root);
+        g_event = new GHOST_EventCursor(getMilliSeconds(),
+                                        GHOST_kEventCursorMove,
+                                        window,
+                                        xme.x_root,
+                                        xme.y_root,
+                                        window->GetTabletData());
       }
       break;
     }
@@ -934,7 +1051,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
        *       is unmodified (or anyone swapping the keys with xmodmap).
        *
        *     - XLookupKeysym seems to always use first defined keymap (see T47228), which generates
-       *       keycodes unusable by ghost_key_from_keysym for non-latin-compatible keymaps.
+       *       keycodes unusable by ghost_key_from_keysym for non-Latin-compatible keymaps.
        *
        * To address this, we:
        *
@@ -1088,7 +1205,8 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
       }
 #endif
 
-      g_event = new GHOST_EventKey(getMilliSeconds(), type, window, gkey, ascii, utf8_buf);
+      g_event = new GHOST_EventKey(
+          getMilliSeconds(), type, window, gkey, ascii, utf8_buf, is_repeat);
 
 #if defined(WITH_X11_XINPUT) && defined(X_HAVE_UTF8_STRING)
       /* when using IM for some languages such as Japanese,
@@ -1112,7 +1230,8 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
           /* enqueue previous character */
           pushEvent(g_event);
 
-          g_event = new GHOST_EventKey(getMilliSeconds(), type, window, gkey, '\0', &utf8_buf[i]);
+          g_event = new GHOST_EventKey(
+              getMilliSeconds(), type, window, gkey, '\0', &utf8_buf[i], is_repeat);
         }
       }
 
@@ -1164,7 +1283,8 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
       else
         break;
 
-      g_event = new GHOST_EventButton(getMilliSeconds(), type, window, gbmask);
+      g_event = new GHOST_EventButton(
+          getMilliSeconds(), type, window, gbmask, window->GetTabletData());
       break;
     }
 
@@ -1214,7 +1334,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
         int revert_to;
 
         /* as ICCCM say, we need reply this event
-         * with a SetInputFocus, the data[1] have
+         * with a #SetInputFocus, the data[1] have
          * the valid timestamp (send by the wm).
          *
          * Some WM send this event before the
@@ -1235,7 +1355,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
       else {
 #ifdef WITH_XDND
         /* try to handle drag event
-         * (if there's no such events, GHOST_HandleClientMessage will return zero) */
+         * (if there's no such events, #GHOST_HandleClientMessage will return zero) */
         if (window->getDropTarget()->GHOST_HandleClientMessage(xe) == false) {
           /* Unknown client message, ignore */
         }
@@ -1256,17 +1376,21 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
 
     case EnterNotify:
     case LeaveNotify: {
-      /* XCrossingEvents pointer leave enter window.
-       * also do cursor move here, MotionNotify only
+      /* #XCrossingEvents pointer leave enter window.
+       * also do cursor move here, #MotionNotify only
        * happens when motion starts & ends inside window.
        * we only do moves when the crossing mode is 'normal'
-       * (really crossing between windows) since some windowmanagers
-       * also send grab/ungrab crossings for mousewheel events.
+       * (really crossing between windows) since some window-managers
+       * also send grab/un-grab crossings for mouse-wheel events.
        */
       XCrossingEvent &xce = xe->xcrossing;
       if (xce.mode == NotifyNormal) {
-        g_event = new GHOST_EventCursor(
-            getMilliSeconds(), GHOST_kEventCursorMove, window, xce.x_root, xce.y_root);
+        g_event = new GHOST_EventCursor(getMilliSeconds(),
+                                        GHOST_kEventCursorMove,
+                                        window,
+                                        xce.x_root,
+                                        xce.y_root,
+                                        window->GetTabletData());
       }
 
       // printf("X: %s window %d\n",
@@ -1282,11 +1406,11 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
     case MapNotify:
       /*
        * From ICCCM:
-       * [ Clients can select for StructureNotify on their
+       * [ Clients can select for #StructureNotify on their
        *   top-level windows to track transition between
-       *   Normal and Iconic states. Receipt of a MapNotify
+       *   Normal and Iconic states. Receipt of a #MapNotify
        *   event will indicate a transition to the Normal
-       *   state, and receipt of an UnmapNotify event will
+       *   state, and receipt of an #UnmapNotify event will
        *   indicate a transition to the Iconic state. ]
        */
       if (window->m_post_init == True) {
@@ -1327,7 +1451,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
       nxe.xselection.target = xse->target;
       nxe.xselection.time = xse->time;
 
-      /* Check to see if the requestor is asking for String */
+      /* Check to see if the requester is asking for String */
       if (xse->target == utf8_string || xse->target == string || xse->target == compound_text ||
           xse->target == c_string) {
         if (xse->selection == XInternAtom(m_display, "PRIMARY", False)) {
@@ -1373,7 +1497,7 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
         nxe.xselection.property = None;
       }
 
-      /* Send the event to the client 0 0 == False, SelectionNotify */
+      /* Send the event to the client 0 0 == False, #SelectionNotify */
       XSendEvent(m_display, xse->requestor, 0, 0, &nxe);
       XFlush(m_display);
       break;
@@ -1397,9 +1521,9 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
            * around tablet surface */
           window->GetTabletData().Active = xtablet.mode;
 
-          /* Note: This event might be generated with incomplete dataset
+          /* Note: This event might be generated with incomplete data-set
            * (don't exactly know why, looks like in some cases, if the value does not change,
-           * it is not included in subsequent XDeviceMotionEvent events).
+           * it is not included in subsequent #XDeviceMotionEvent events).
            * So we have to check which values this event actually contains!
            */
 
@@ -1455,14 +1579,13 @@ void GHOST_SystemX11::processEvent(XEvent *xe)
 GHOST_TSuccess GHOST_SystemX11::getModifierKeys(GHOST_ModifierKeys &keys) const
 {
 
-  /* analyse the masks retuned from XQueryPointer. */
+  /* Analyze the masks returned from #XQueryPointer. */
 
   memset((void *)m_keyboard_vector, 0, sizeof(m_keyboard_vector));
 
   XQueryKeymap(m_display, (char *)m_keyboard_vector);
 
-  /* now translate key symbols into keycodes and
-   * test with vector. */
+  /* Now translate key symbols into key-codes and test with vector. */
 
   const static KeyCode shift_l = XKeysymToKeycode(m_display, XK_Shift_L);
   const static KeyCode shift_r = XKeysymToKeycode(m_display, XK_Shift_R);
@@ -1557,7 +1680,7 @@ GHOST_TSuccess GHOST_SystemX11::setCursorPosition(GHOST_TInt32 x, GHOST_TInt32 y
 {
 
   /* This is a brute force move in screen coordinates
-   * XWarpPointer does relative moves so first determine the
+   * #XWarpPointer does relative moves so first determine the
    * current pointer position. */
 
   int cx, cy;
@@ -1620,7 +1743,7 @@ void GHOST_SystemX11::addDirtyWindow(GHOST_WindowX11 *bad_wind)
 
 bool GHOST_SystemX11::generateWindowExposeEvents()
 {
-  vector<GHOST_WindowX11 *>::iterator w_start = m_dirty_windows.begin();
+  vector<GHOST_WindowX11 *>::const_iterator w_start = m_dirty_windows.begin();
   vector<GHOST_WindowX11 *>::const_iterator w_end = m_dirty_windows.end();
   bool anyProcessed = false;
 
@@ -1767,7 +1890,7 @@ static GHOST_TKey ghost_key_from_keysym(const KeySym key)
 #  endif
 #endif
       default:
-#ifdef GHOST_DEBUG
+#ifdef WITH_GHOST_DEBUG
         printf("%s: unknown key: %lu / 0x%lx\n", __func__, key, key);
 #endif
         type = GHOST_kKeyUnknown;
@@ -1791,7 +1914,7 @@ static GHOST_TKey ghost_key_from_keycode(const XkbDescPtr xkb_descr, const KeyCo
     switch (id) {
       case MAKE_ID('T', 'L', 'D', 'E'):
         return GHOST_kKeyAccentGrave;
-#ifdef GHOST_DEBUG
+#ifdef WITH_GHOST_DEBUG
       default:
         printf("%s unhandled keycode: %.*s\n", __func__, XkbKeyNameLength, id_str);
         break;
@@ -1830,15 +1953,15 @@ void GHOST_SystemX11::getClipboard_xcout(const XEvent *evt,
   unsigned long pty_size, pty_items;
   unsigned char *ltxt = *txt;
 
-  vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
-  vector<GHOST_IWindow *>::iterator win_it = win_vec.begin();
+  const vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
+  vector<GHOST_IWindow *>::const_iterator win_it = win_vec.begin();
   GHOST_WindowX11 *window = static_cast<GHOST_WindowX11 *>(*win_it);
   Window win = window->getXWindow();
 
   switch (*context) {
     /* There is no context, do an XConvertSelection() */
     case XCLIB_XCOUT_NONE:
-      /* Initialise return length to 0 */
+      /* Initialize return length to 0. */
       if (*len > 0) {
         free(*txt);
         *len = 0;
@@ -2036,8 +2159,8 @@ GHOST_TUns8 *GHOST_SystemX11::getClipboard(bool selection) const
   else
     sseln = m_atom.CLIPBOARD;
 
-  vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
-  vector<GHOST_IWindow *>::iterator win_it = win_vec.begin();
+  const vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
+  vector<GHOST_IWindow *>::const_iterator win_it = win_vec.begin();
   GHOST_WindowX11 *window = static_cast<GHOST_WindowX11 *>(*win_it);
   Window win = window->getXWindow();
 
@@ -2056,15 +2179,25 @@ GHOST_TUns8 *GHOST_SystemX11::getClipboard(bool selection) const
     }
   }
   else if (owner == None)
-    return (NULL);
+    return NULL;
+
+  /* Restore events so copy doesn't swallow other event types (keyboard/mouse). */
+  vector<XEvent> restore_events;
 
   while (1) {
     /* only get an event if xcout() is doing something */
-    if (context != XCLIB_XCOUT_NONE)
+    bool restore_this_event = false;
+    if (context != XCLIB_XCOUT_NONE) {
       XNextEvent(m_display, &evt);
+      restore_this_event = (evt.type != SelectionNotify);
+    }
 
     /* fetch the selection, or part of it */
     getClipboard_xcout(&evt, sseln, target, &sel_buf, &sel_len, &context);
+
+    if (restore_this_event) {
+      restore_events.push_back(evt);
+    }
 
     /* fallback is needed. set XA_STRING to target and restart the loop. */
     if (context == XCLIB_XCOUT_FALLBACK) {
@@ -2094,6 +2227,11 @@ GHOST_TUns8 *GHOST_SystemX11::getClipboard(bool selection) const
       break;
   }
 
+  while (!restore_events.empty()) {
+    XPutBackEvent(m_display, &restore_events.back());
+    restore_events.pop_back();
+  }
+
   if (sel_len) {
     /* only print the buffer out, and free it, if it's not
      * empty
@@ -2109,15 +2247,15 @@ GHOST_TUns8 *GHOST_SystemX11::getClipboard(bool selection) const
 
     return tmp_data;
   }
-  return (NULL);
+  return NULL;
 }
 
 void GHOST_SystemX11::putClipboard(GHOST_TInt8 *buffer, bool selection) const
 {
   Window m_window, owner;
 
-  vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
-  vector<GHOST_IWindow *>::iterator win_it = win_vec.begin();
+  const vector<GHOST_IWindow *> &win_vec = m_windowManager->getWindows();
+  vector<GHOST_IWindow *>::const_iterator win_it = win_vec.begin();
   GHOST_WindowX11 *window = static_cast<GHOST_WindowX11 *>(*win_it);
   m_window = window->getXWindow();
 
@@ -2146,6 +2284,7 @@ void GHOST_SystemX11::putClipboard(GHOST_TInt8 *buffer, bool selection) const
   }
 }
 
+/* -------------------------------------------------------------------- */
 /** \name Message Box
  * \{ */
 class DialogData {
@@ -2342,7 +2481,7 @@ GHOST_TSuccess GHOST_SystemX11::showMessageBox(const char *title,
           string cmd = "xdg-open \"" + string(link) + "\"";
           if (system(cmd.c_str()) != 0) {
             GHOST_PRINTF("GHOST_SystemX11::showMessageBox: Unable to run system command [%s]",
-                         cmd);
+                         cmd.c_str());
           }
         }
         break;

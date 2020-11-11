@@ -33,7 +33,7 @@ defs_precalc = {
     "glColor3ubv": {0: 3},
     "glColor4ubv": {0: 4},
 
-    "glColor4usv": {0: 3},
+    "glColor3usv": {0: 3},
     "glColor4usv": {0: 4},
 
     "glColor3fv": {0: 3},
@@ -355,6 +355,8 @@ def recursive_arg_sizes(node, ):
         # print("adding", node.spelling)
     for c in node.get_children():
         recursive_arg_sizes(c)
+
+
 # cache function sizes
 recursive_arg_sizes(tu.cursor)
 _defs.update(defs_precalc)

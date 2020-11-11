@@ -22,8 +22,7 @@
  * Declaration of GHOST_WindowX11 class.
  */
 
-#ifndef __GHOST_WINDOWX11_H__
-#define __GHOST_WINDOWX11_H__
+#pragma once
 
 #include "GHOST_Window.h"
 #include <X11/Xlib.h>
@@ -37,7 +36,6 @@
 
 #include <map>
 
-class STR_String;
 class GHOST_SystemX11;
 
 #ifdef WITH_XDND
@@ -56,20 +54,20 @@ class GHOST_WindowX11 : public GHOST_Window {
    * Constructor.
    * Creates a new window and opens it.
    * To check if the window was created properly, use the getValid() method.
-   * \param title     The text shown in the title bar of the window.
-   * \param left      The coordinate of the left edge of the window.
-   * \param top       The coordinate of the top edge of the window.
-   * \param width     The width the window.
-   * \param height    The height the window.
-   * \param state     The state the window is initially opened with.
-   * \param parentWindow  Parent (embedder) window
-   * \param type      The type of drawing context installed in this window.
-   * \param stereoVisual  Stereo visual for quad buffered stereo.
-   * \param alphaBackground Enable alpha blending of window with display background
+   * \param title: The text shown in the title bar of the window.
+   * \param left: The coordinate of the left edge of the window.
+   * \param top: The coordinate of the top edge of the window.
+   * \param width: The width the window.
+   * \param height: The height the window.
+   * \param state: The state the window is initially opened with.
+   * \param parentWindow: Parent (embedder) window.
+   * \param type: The type of drawing context installed in this window.
+   * \param stereoVisual: Stereo visual for quad buffered stereo.
+   * \param alphaBackground: Enable alpha blending of window with display background.
    */
   GHOST_WindowX11(GHOST_SystemX11 *system,
                   Display *display,
-                  const STR_String &title,
+                  const char *title,
                   GHOST_TInt32 left,
                   GHOST_TInt32 top,
                   GHOST_TUns32 width,
@@ -85,9 +83,9 @@ class GHOST_WindowX11 : public GHOST_Window {
 
   bool getValid() const;
 
-  void setTitle(const STR_String &title);
+  void setTitle(const char *title);
 
-  void getTitle(STR_String &title) const;
+  std::string getTitle() const;
 
   void getWindowBounds(GHOST_Rect &bounds) const;
 
@@ -144,12 +142,11 @@ class GHOST_WindowX11 : public GHOST_Window {
    * Return a handle to the x11 window type.
    */
   Window getXWindow();
-#ifdef WITH_X11_XINPUT
+
   GHOST_TabletData &GetTabletData()
   {
     return m_tabletData;
   }
-#endif  // WITH_X11_XINPUT
 
 #if defined(WITH_X11_XINPUT) && defined(X_HAVE_UTF8_STRING)
   XIC getX11_XIC()
@@ -189,7 +186,7 @@ class GHOST_WindowX11 : public GHOST_Window {
 
  protected:
   /**
-   * \param type  The type of rendering context create.
+   * \param type: The type of rendering context create.
    * \return Indication of success.
    */
   GHOST_Context *newDrawingContext(GHOST_TDrawingContextType type);
@@ -228,7 +225,7 @@ class GHOST_WindowX11 : public GHOST_Window {
                                             bool canInvertColor);
 
  private:
-  /// Force use of public constructor.
+  /* Force use of public constructor. */
 
   GHOST_WindowX11();
 
@@ -269,9 +266,7 @@ class GHOST_WindowX11 : public GHOST_Window {
   GHOST_DropTargetX11 *m_dropTarget;
 #endif
 
-#ifdef WITH_X11_XINPUT
   GHOST_TabletData m_tabletData;
-#endif
 
 #if defined(WITH_X11_XINPUT) && defined(X_HAVE_UTF8_STRING)
   XIC m_xic;
@@ -292,5 +287,3 @@ class GHOST_WindowX11 : public GHOST_Window {
   void motifFullScreen(bool set);
   bool motifIsFullScreen() const;
 };
-
-#endif  // __GHOST_WINDOWX11_H__

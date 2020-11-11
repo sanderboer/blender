@@ -18,9 +18,9 @@
  */
 
 #include "GHOST_WindowCocoa.h"
-#include "GHOST_SystemCocoa.h"
 #include "GHOST_ContextNone.h"
 #include "GHOST_Debug.h"
+#include "GHOST_SystemCocoa.h"
 
 #if defined(WITH_GL_EGL)
 #  include "GHOST_ContextEGL.h"
@@ -29,8 +29,8 @@
 #endif
 
 #include <Cocoa/Cocoa.h>
-#include <QuartzCore/QuartzCore.h>
 #include <Metal/Metal.h>
+#include <QuartzCore/QuartzCore.h>
 
 #include <sys/sysctl.h>
 
@@ -98,6 +98,11 @@
 
 - (void)windowDidEnterFullScreen:(NSNotification *)notification
 {
+  /* macOS does not send a window resize event when switching between zoomed
+   * and fullscreen, when automatic show/hide of dock and menu bar are enabled.
+   * Send our own to prevent artifacts. */
+  systemCocoa->handleWindowEvent(GHOST_kEventWindowSize, associatedWindow);
+
   associatedWindow->setImmediateDraw(false);
 }
 
@@ -108,6 +113,8 @@
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification
 {
+  /* See comment for windowWillEnterFullScreen. */
+  systemCocoa->handleWindowEvent(GHOST_kEventWindowSize, associatedWindow);
   associatedWindow->setImmediateDraw(false);
 }
 
@@ -127,6 +134,7 @@
 - (void)windowDidChangeBackingProperties:(NSNotification *)notification
 {
   systemCocoa->handleWindowEvent(GHOST_kEventNativeResolutionChange, associatedWindow);
+  systemCocoa->handleWindowEvent(GHOST_kEventWindowSize, associatedWindow);
 }
 
 - (BOOL)windowShouldClose:(id)sender;
@@ -283,7 +291,7 @@
 /* clang-format on */
 
 GHOST_WindowCocoa::GHOST_WindowCocoa(GHOST_SystemCocoa *systemCocoa,
-                                     const STR_String &title,
+                                     const char *title,
                                      GHOST_TInt32 left,
                                      GHOST_TInt32 bottom,
                                      GHOST_TUns32 width,
@@ -387,7 +395,7 @@ GHOST_WindowCocoa::GHOST_WindowCocoa(GHOST_SystemCocoa *systemCocoa,
 
   setTitle(title);
 
-  m_tablet = GHOST_TABLET_DATA_DEFAULT;
+  m_tablet = GHOST_TABLET_DATA_NONE;
 
   CocoaWindowDelegate *windowDelegate = [[CocoaWindowDelegate alloc] init];
   [windowDelegate setSystemAndWindowCocoa:systemCocoa windowCocoa:this];
@@ -396,23 +404,23 @@ GHOST_WindowCocoa::GHOST_WindowCocoa(GHOST_SystemCocoa *systemCocoa,
   [m_window setAcceptsMouseMovedEvents:YES];
 
   NSView *contentview = [m_window contentView];
-  [contentview setAcceptsTouchEvents:YES];
+  [contentview setAllowedTouchTypes:(NSTouchTypeMaskDirect | NSTouchTypeMaskIndirect)];
 
   [m_window registerForDraggedTypes:[NSArray arrayWithObjects:NSFilenamesPboardType,
                                                               NSStringPboardType,
                                                               NSTIFFPboardType,
                                                               nil]];
 
-  if (state != GHOST_kWindowStateFullScreen) {
+  if (is_dialog && parentWindow) {
+    [parentWindow->getCocoaWindow() addChildWindow:m_window ordered:NSWindowAbove];
+    [m_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenAuxiliary];
+  }
+  else {
     [m_window setCollectionBehavior:NSWindowCollectionBehaviorFullScreenPrimary];
   }
 
   if (state == GHOST_kWindowStateFullScreen)
     setState(GHOST_kWindowStateFullScreen);
-
-  if (is_dialog && parentWindow) {
-    [parentWindow->getCocoaWindow() addChildWindow:m_window ordered:NSWindowAbove];
-  }
 
   setNativePixelSize();
 
@@ -474,7 +482,7 @@ void *GHOST_WindowCocoa::getOSWindow() const
   return (void *)m_window;
 }
 
-void GHOST_WindowCocoa::setTitle(const STR_String &title)
+void GHOST_WindowCocoa::setTitle(const char *title)
 {
   GHOST_ASSERT(getValid(), "GHOST_WindowCocoa::setTitle(): window invalid");
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
@@ -516,7 +524,7 @@ void GHOST_WindowCocoa::setTitle(const STR_String &title)
   [pool drain];
 }
 
-void GHOST_WindowCocoa::getTitle(STR_String &title) const
+std::string GHOST_WindowCocoa::getTitle() const
 {
   GHOST_ASSERT(getValid(), "GHOST_WindowCocoa::getTitle(): window invalid");
 
@@ -524,11 +532,14 @@ void GHOST_WindowCocoa::getTitle(STR_String &title) const
 
   NSString *windowTitle = [m_window title];
 
+  std::string title;
   if (windowTitle != nil) {
     title = [windowTitle UTF8String];
   }
 
   [pool drain];
+
+  return title;
 }
 
 void GHOST_WindowCocoa::getWindowBounds(GHOST_Rect &bounds) const
@@ -799,6 +810,7 @@ GHOST_TSuccess GHOST_WindowCocoa::setOrder(GHOST_TWindowOrder order)
 
   GHOST_ASSERT(getValid(), "GHOST_WindowCocoa::setOrder(): window invalid");
   if (order == GHOST_kWindowOrderTop) {
+    [NSApp activateIgnoringOtherApps:YES];
     [m_window makeKeyAndOrderFront:nil];
   }
   else {
@@ -857,28 +869,26 @@ GHOST_TSuccess GHOST_WindowCocoa::setProgressBar(float progress)
     NSImage *dockIcon = [[NSImage alloc] initWithSize:NSMakeSize(128, 128)];
 
     [dockIcon lockFocus];
-    NSRect progressBox = {{4, 4}, {120, 16}};
 
     [[NSImage imageNamed:@"NSApplicationIcon"] drawAtPoint:NSZeroPoint
                                                   fromRect:NSZeroRect
                                                  operation:NSCompositingOperationSourceOver
                                                   fraction:1.0];
 
-    // Track & Outline
-    [[NSColor blackColor] setFill];
-    NSRectFill(progressBox);
+    NSRect progressRect = {{8, 8}, {112, 14}};
+    NSBezierPath *progressPath;
 
-    [[NSColor whiteColor] set];
-    NSFrameRect(progressBox);
+    /* Draw white track. */
+    [[[NSColor whiteColor] colorWithAlphaComponent:0.6] setFill];
+    progressPath = [NSBezierPath bezierPathWithRoundedRect:progressRect xRadius:7 yRadius:7];
+    [progressPath fill];
 
-    // Progress fill
-    progressBox = NSInsetRect(progressBox, 1, 1);
-
-    progressBox.size.width = progressBox.size.width * progress;
-    NSGradient *gradient = [[NSGradient alloc] initWithStartingColor:[NSColor darkGrayColor]
-                                                         endingColor:[NSColor lightGrayColor]];
-    [gradient drawInRect:progressBox angle:90];
-    [gradient release];
+    /* Black progress fill. */
+    [[[NSColor blackColor] colorWithAlphaComponent:0.7] setFill];
+    progressRect = NSInsetRect(progressRect, 2, 2);
+    progressRect.size.width *= progress;
+    progressPath = [NSBezierPath bezierPathWithRoundedRect:progressRect xRadius:5 yRadius:5];
+    [progressPath fill];
 
     [dockIcon unlockFocus];
 
@@ -943,7 +953,9 @@ static NSCursor *getImageCursor(GHOST_TStandardCursor shape, NSString *name, NSP
   const int index = (int)shape;
   if (!loaded[index]) {
     /* Load image from file in application Resources folder. */
+    /* clang-format off */
     @autoreleasepool {
+      /* clang-format on */
       NSImage *image = [NSImage imageNamed:name];
       if (image != NULL) {
         cursors[index] = [[NSCursor alloc] initWithImage:image hotSpot:hotspot];

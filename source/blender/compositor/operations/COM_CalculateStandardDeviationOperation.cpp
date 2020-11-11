@@ -20,12 +20,9 @@
 #include "BLI_math.h"
 #include "BLI_utildefines.h"
 
-extern "C" {
 #include "IMB_colormanagement.h"
-}
 
 CalculateStandardDeviationOperation::CalculateStandardDeviationOperation()
-    : CalculateMeanOperation()
 {
   /* pass */
 }
@@ -102,5 +99,5 @@ void *CalculateStandardDeviationOperation::initializeTileData(rcti *rect)
     this->m_iscalculated = true;
   }
   unlockMutex();
-  return NULL;
+  return nullptr;
 }

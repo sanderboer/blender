@@ -25,12 +25,8 @@
 #=============================================================================
 # Copyright 2011 Blender Foundation.
 #
-# Distributed under the OSI-approved BSD License (the "License");
-# see accompanying file Copyright.txt for details.
-#
-# This software is distributed WITHOUT ANY WARRANTY; without even the
-# implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
-# See the License for more information.
+# Distributed under the OSI-approved BSD 3-Clause License,
+# see accompanying file BSD-3-Clause-license.txt for details.
 #=============================================================================
 
 # If PYTHON_ROOT_DIR was defined in the environment, use it.
@@ -71,7 +67,6 @@ STRING(REPLACE "." "" _PYTHON_VERSION_NO_DOTS ${PYTHON_VERSION})
 SET(_python_SEARCH_DIRS
   ${PYTHON_ROOT_DIR}
   "$ENV{HOME}/py${_PYTHON_VERSION_NO_DOTS}"
-  "/opt/py${_PYTHON_VERSION_NO_DOTS}"
   "/opt/lib/python-${PYTHON_VERSION}"
 )
 

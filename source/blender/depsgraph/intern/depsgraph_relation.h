@@ -23,9 +23,12 @@
 
 #pragma once
 
-namespace DEG {
+#include "MEM_guardedalloc.h"
 
-class Node;
+namespace blender {
+namespace deg {
+
+struct Node;
 
 /* Settings/Tags on Relationship.
  * NOTE: Is a bitmask, allowing accumulation. */
@@ -58,6 +61,9 @@ struct Relation {
   /* relationship attributes */
   const char *name; /* label for debugging */
   int flag;         /* Bitmask of RelationFlag) */
+
+  MEM_CXX_CLASS_ALLOC_FUNCS("Relation");
 };
 
-}  // namespace DEG
+}  // namespace deg
+}  // namespace blender

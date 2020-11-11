@@ -19,12 +19,12 @@
  * \brief Class to define the Postscript rendering of a stroke
  */
 
-#include "Canvas.h"
 #include "PSStrokeRenderer.h"
+#include "Canvas.h"
 
 namespace Freestyle {
 
-PSStrokeRenderer::PSStrokeRenderer(const char *iFileName) : StrokeRenderer()
+PSStrokeRenderer::PSStrokeRenderer(const char *iFileName)
 {
   if (!iFileName) {
     iFileName = "freestyle.ps";

@@ -18,12 +18,7 @@
  * \ingroup bmesh
  */
 
-#ifndef __BMESH_INTERSECT_EDGES_H__
-#define __BMESH_INTERSECT_EDGES_H__
+#pragma once
 
-void BM_vert_weld_linked_wire_edges_into_linked_faces(
-    BMesh *bm, BMVert *v, const float epsilon, BMEdge **r_edgenet[], int *r_edgenet_alloc_len);
-
-bool BM_mesh_intersect_edges(BMesh *bm, const char hflag, const float dist, GHash *r_targetmap);
-
-#endif /* __BMESH_INTERSECT_EDGES_H__ */
+bool BM_mesh_intersect_edges(
+    BMesh *bm, const char hflag, const float dist, const bool split_faces, GHash *r_targetmap);

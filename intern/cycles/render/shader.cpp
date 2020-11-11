@@ -33,6 +33,7 @@
 
 #include "util/util_foreach.h"
 #include "util/util_murmurhash.h"
+#include "util/util_task.h"
 
 #ifdef WITH_OCIO
 #  include <OpenColorIO/OpenColorIO.h>
@@ -168,7 +169,7 @@ NODE_DEFINE(Shader)
   SOCKET_ENUM(volume_sampling_method,
               "Volume Sampling Method",
               volume_sampling_method_enum,
-              VOLUME_SAMPLING_DISTANCE);
+              VOLUME_SAMPLING_MULTIPLE_IMPORTANCE);
 
   static NodeEnum volume_interpolation_method_enum;
   volume_interpolation_method_enum.insert("linear", VOLUME_INTERPOLATION_LINEAR);
@@ -178,11 +179,15 @@ NODE_DEFINE(Shader)
               volume_interpolation_method_enum,
               VOLUME_INTERPOLATION_LINEAR);
 
+  SOCKET_FLOAT(volume_step_rate, "Volume Step Rate", 1.0f);
+
   static NodeEnum displacement_method_enum;
   displacement_method_enum.insert("bump", DISPLACE_BUMP);
   displacement_method_enum.insert("true", DISPLACE_TRUE);
   displacement_method_enum.insert("both", DISPLACE_BOTH);
   SOCKET_ENUM(displacement_method, "Displacement Method", displacement_method_enum, DISPLACE_BUMP);
+
+  SOCKET_INT(pass_id, "Pass ID", 0);
 
   return type;
 }
@@ -203,19 +208,17 @@ Shader::Shader() : Node(node_type)
   has_bssrdf_bump = false;
   has_surface_spatial_varying = false;
   has_volume_spatial_varying = false;
-  has_object_dependency = false;
-  has_attribute_dependency = false;
+  has_volume_attribute_dependency = false;
   has_integrator_dependency = false;
   has_volume_connected = false;
+  prev_volume_step_rate = 0.0f;
 
   displacement_method = DISPLACE_BUMP;
 
   id = -1;
   used = false;
 
-  need_update = true;
-  need_update_mesh = true;
-  need_sync_object = false;
+  need_update_geometry = true;
 }
 
 Shader::~Shader()
@@ -248,7 +251,7 @@ bool Shader::is_constant_emission(float3 *emission)
       return false;
     }
 
-    *emission = node->color * node->strength;
+    *emission = node->get_color() * node->get_strength();
   }
   else if (surf->link->parent->type == BackgroundNode::node_type) {
     BackgroundNode *node = (BackgroundNode *)surf->link->parent;
@@ -260,7 +263,7 @@ bool Shader::is_constant_emission(float3 *emission)
       return false;
     }
 
-    *emission = node->color * node->strength;
+    *emission = node->get_color() * node->get_strength();
   }
   else {
     return false;
@@ -288,7 +291,7 @@ void Shader::set_graph(ShaderGraph *graph_)
     const char *new_hash = (graph_) ? graph_->displacement_hash.c_str() : "";
 
     if (strcmp(old_hash, new_hash) != 0) {
-      need_update_mesh = true;
+      need_update_geometry = true;
     }
   }
 
@@ -304,7 +307,7 @@ void Shader::set_graph(ShaderGraph *graph_)
 void Shader::tag_update(Scene *scene)
 {
   /* update tag */
-  need_update = true;
+  tag_modified();
   scene->shader_manager->need_update = true;
 
   /* if the shader previously was emissive, update light distribution,
@@ -317,9 +320,11 @@ void Shader::tag_update(Scene *scene)
    * has use_mis set to false. We are quite close to release now, so
    * better to be safe.
    */
-  if (this == scene->background->get_shader(scene) &&
-      scene->light_manager->has_background_light(scene)) {
-    scene->light_manager->need_update = true;
+  if (this == scene->background->get_shader(scene)) {
+    scene->light_manager->need_update_background = true;
+    if (scene->light_manager->has_background_light(scene)) {
+      scene->light_manager->need_update = true;
+    }
   }
 
   /* quick detection of which kind of shaders we have to avoid loading
@@ -347,15 +352,16 @@ void Shader::tag_update(Scene *scene)
   }
 
   /* compare if the attributes changed, mesh manager will check
-   * need_update_mesh, update the relevant meshes and clear it. */
+   * need_update_geometry, update the relevant meshes and clear it. */
   if (attributes.modified(prev_attributes)) {
-    need_update_mesh = true;
-    scene->mesh_manager->need_update = true;
+    need_update_geometry = true;
+    scene->geometry_manager->need_update = true;
   }
 
-  if (has_volume != prev_has_volume) {
-    scene->mesh_manager->need_flags_update = true;
+  if (has_volume != prev_has_volume || volume_step_rate != prev_volume_step_rate) {
+    scene->geometry_manager->need_flags_update = true;
     scene->object_manager->need_flags_update = true;
+    prev_volume_step_rate = volume_step_rate;
   }
 }
 
@@ -364,7 +370,7 @@ void Shader::tag_used(Scene *scene)
   /* if an unused shader suddenly gets used somewhere, it needs to be
    * recompiled because it was skipped for compilation before */
   if (!used) {
-    need_update = true;
+    tag_modified();
     scene->shader_manager->need_update = true;
   }
 }
@@ -415,7 +421,7 @@ ShaderManager::~ShaderManager()
 {
 }
 
-ShaderManager *ShaderManager::create(Scene *scene, int shadingsystem)
+ShaderManager *ShaderManager::create(int shadingsystem)
 {
   ShaderManager *manager;
 
@@ -430,8 +436,6 @@ ShaderManager *ShaderManager::create(Scene *scene, int shadingsystem)
   {
     manager = new SVMShaderManager();
   }
-
-  add_default(scene);
 
   return manager;
 }
@@ -471,8 +475,12 @@ int ShaderManager::get_shader_id(Shader *shader, bool smooth)
   return id;
 }
 
-void ShaderManager::device_update_shaders_used(Scene *scene)
+void ShaderManager::update_shaders_used(Scene *scene)
 {
+  if (!need_update) {
+    return;
+  }
+
   /* figure out which shaders are in use, so SVM/OSL can skip compiling them
    * for speed and avoid loading image textures into memory */
   uint id = 0;
@@ -486,16 +494,18 @@ void ShaderManager::device_update_shaders_used(Scene *scene)
   scene->default_background->used = true;
   scene->default_empty->used = true;
 
-  if (scene->background->shader)
-    scene->background->shader->used = true;
+  if (scene->background->get_shader())
+    scene->background->get_shader()->used = true;
 
-  foreach (Mesh *mesh, scene->meshes)
-    foreach (Shader *shader, mesh->used_shaders)
+  foreach (Geometry *geom, scene->geometry)
+    foreach (Node *node, geom->get_used_shaders()) {
+      Shader *shader = static_cast<Shader *>(node);
       shader->used = true;
+    }
 
   foreach (Light *light, scene->lights)
-    if (light->shader)
-      light->shader->used = true;
+    if (light->get_shader())
+      const_cast<Shader *>(light->get_shader())->used = true;
 }
 
 void ShaderManager::device_update_common(Device *device,
@@ -515,9 +525,9 @@ void ShaderManager::device_update_common(Device *device,
   foreach (Shader *shader, scene->shaders) {
     uint flag = 0;
 
-    if (shader->use_mis)
+    if (shader->get_use_mis())
       flag |= SD_USE_MIS;
-    if (shader->has_surface_transparent && shader->use_transparent_shadow)
+    if (shader->has_surface_transparent && shader->get_use_transparent_shadow())
       flag |= SD_HAS_TRANSPARENT_SHADOW;
     if (shader->has_volume) {
       flag |= SD_HAS_VOLUME;
@@ -531,23 +541,25 @@ void ShaderManager::device_update_common(Device *device,
     /* in this case we can assume transparent surface */
     if (shader->has_volume_connected && !shader->has_surface)
       flag |= SD_HAS_ONLY_VOLUME;
-    if (shader->heterogeneous_volume && shader->has_volume_spatial_varying)
-      flag |= SD_HETEROGENEOUS_VOLUME;
-    if (shader->has_attribute_dependency)
-      flag |= SD_NEED_ATTRIBUTES;
+    if (shader->has_volume) {
+      if (shader->get_heterogeneous_volume() && shader->has_volume_spatial_varying)
+        flag |= SD_HETEROGENEOUS_VOLUME;
+    }
+    if (shader->has_volume_attribute_dependency)
+      flag |= SD_NEED_VOLUME_ATTRIBUTES;
     if (shader->has_bssrdf_bump)
       flag |= SD_HAS_BSSRDF_BUMP;
     if (device->info.has_volume_decoupled) {
-      if (shader->volume_sampling_method == VOLUME_SAMPLING_EQUIANGULAR)
+      if (shader->get_volume_sampling_method() == VOLUME_SAMPLING_EQUIANGULAR)
         flag |= SD_VOLUME_EQUIANGULAR;
-      if (shader->volume_sampling_method == VOLUME_SAMPLING_MULTIPLE_IMPORTANCE)
+      if (shader->get_volume_sampling_method() == VOLUME_SAMPLING_MULTIPLE_IMPORTANCE)
         flag |= SD_VOLUME_MIS;
     }
-    if (shader->volume_interpolation_method == VOLUME_INTERPOLATION_CUBIC)
+    if (shader->get_volume_interpolation_method() == VOLUME_INTERPOLATION_CUBIC)
       flag |= SD_VOLUME_CUBIC;
     if (shader->has_bump)
       flag |= SD_HAS_BUMP;
-    if (shader->displacement_method != DISPLACE_BUMP)
+    if (shader->get_displacement_method() != DISPLACE_BUMP)
       flag |= SD_HAS_DISPLACEMENT;
 
     /* constant emission check */
@@ -559,7 +571,7 @@ void ShaderManager::device_update_common(Device *device,
 
     /* regular shader */
     kshader->flags = flag;
-    kshader->pass_id = shader->pass_id;
+    kshader->pass_id = shader->get_pass_id();
     kshader->constant_emission[0] = constant_emission.x;
     kshader->constant_emission[1] = constant_emission.y;
     kshader->constant_emission[2] = constant_emission.z;
@@ -615,57 +627,73 @@ void ShaderManager::add_default(Scene *scene)
   {
     ShaderGraph *graph = new ShaderGraph();
 
-    DiffuseBsdfNode *diffuse = new DiffuseBsdfNode();
-    diffuse->color = make_float3(0.8f, 0.8f, 0.8f);
+    DiffuseBsdfNode *diffuse = graph->create_node<DiffuseBsdfNode>();
+    diffuse->set_color(make_float3(0.8f, 0.8f, 0.8f));
     graph->add(diffuse);
 
     graph->connect(diffuse->output("BSDF"), graph->output()->input("Surface"));
 
-    Shader *shader = new Shader();
+    Shader *shader = scene->create_node<Shader>();
     shader->name = "default_surface";
-    shader->graph = graph;
-    scene->shaders.push_back(shader);
+    shader->set_graph(graph);
     scene->default_surface = shader;
+    shader->tag_update(scene);
+  }
+
+  /* default volume */
+  {
+    ShaderGraph *graph = new ShaderGraph();
+
+    PrincipledVolumeNode *principled = graph->create_node<PrincipledVolumeNode>();
+    graph->add(principled);
+
+    graph->connect(principled->output("Volume"), graph->output()->input("Volume"));
+
+    Shader *shader = scene->create_node<Shader>();
+    shader->name = "default_volume";
+    shader->set_graph(graph);
+    scene->default_volume = shader;
+    shader->tag_update(scene);
   }
 
   /* default light */
   {
     ShaderGraph *graph = new ShaderGraph();
 
-    EmissionNode *emission = new EmissionNode();
-    emission->color = make_float3(0.8f, 0.8f, 0.8f);
-    emission->strength = 0.0f;
+    EmissionNode *emission = graph->create_node<EmissionNode>();
+    emission->set_color(make_float3(0.8f, 0.8f, 0.8f));
+    emission->set_strength(0.0f);
     graph->add(emission);
 
     graph->connect(emission->output("Emission"), graph->output()->input("Surface"));
 
-    Shader *shader = new Shader();
+    Shader *shader = scene->create_node<Shader>();
     shader->name = "default_light";
-    shader->graph = graph;
-    scene->shaders.push_back(shader);
+    shader->set_graph(graph);
     scene->default_light = shader;
+    shader->tag_update(scene);
   }
 
   /* default background */
   {
     ShaderGraph *graph = new ShaderGraph();
 
-    Shader *shader = new Shader();
+    Shader *shader = scene->create_node<Shader>();
     shader->name = "default_background";
-    shader->graph = graph;
-    scene->shaders.push_back(shader);
+    shader->set_graph(graph);
     scene->default_background = shader;
+    shader->tag_update(scene);
   }
 
   /* default empty */
   {
     ShaderGraph *graph = new ShaderGraph();
 
-    Shader *shader = new Shader();
+    Shader *shader = scene->create_node<Shader>();
     shader->name = "default_empty";
-    shader->graph = graph;
-    scene->shaders.push_back(shader);
+    shader->set_graph(graph);
     scene->default_empty = shader;
+    shader->tag_update(scene);
   }
 }
 
@@ -678,10 +706,10 @@ void ShaderManager::get_requested_graph_features(ShaderGraph *graph,
     requested_features->nodes_features |= node->get_feature();
     if (node->special_type == SHADER_SPECIAL_TYPE_CLOSURE) {
       BsdfBaseNode *bsdf_node = static_cast<BsdfBaseNode *>(node);
-      if (CLOSURE_IS_VOLUME(bsdf_node->closure)) {
+      if (CLOSURE_IS_VOLUME(bsdf_node->get_closure_type())) {
         requested_features->nodes_features |= NODE_FEATURE_VOLUME;
       }
-      else if (CLOSURE_IS_PRINCIPLED(bsdf_node->closure)) {
+      else if (CLOSURE_IS_PRINCIPLED(bsdf_node->get_closure_type())) {
         requested_features->use_principled = true;
       }
     }
@@ -704,12 +732,16 @@ void ShaderManager::get_requested_features(Scene *scene,
   requested_features->nodes_features = 0;
   for (int i = 0; i < scene->shaders.size(); i++) {
     Shader *shader = scene->shaders[i];
+    if (!shader->used) {
+      continue;
+    }
+
     /* Gather requested features from all the nodes from the graph nodes. */
     get_requested_graph_features(shader->graph, requested_features);
     ShaderNode *output_node = shader->graph->output();
     if (output_node->input("Displacement")->link != NULL) {
       requested_features->nodes_features |= NODE_FEATURE_BUMP;
-      if (shader->displacement_method == DISPLACE_BOTH) {
+      if (shader->get_displacement_method() == DISPLACE_BOTH) {
         requested_features->nodes_features |= NODE_FEATURE_BUMP_STATE;
         requested_features->max_nodes_group = max(requested_features->max_nodes_group,
                                                   NODE_GROUP_LEVEL_1);

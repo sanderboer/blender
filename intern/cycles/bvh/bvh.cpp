@@ -17,21 +17,15 @@
 
 #include "bvh/bvh.h"
 
+#include "render/hair.h"
 #include "render/mesh.h"
 #include "render/object.h"
 
 #include "bvh/bvh2.h"
-#include "bvh/bvh4.h"
-#include "bvh/bvh8.h"
 #include "bvh/bvh_build.h"
+#include "bvh/bvh_embree.h"
 #include "bvh/bvh_node.h"
-
-#ifdef WITH_OPTIX
-#  include "bvh/bvh_optix.h"
-#endif
-#ifdef WITH_EMBREE
-#  include "bvh/bvh_embree.h"
-#endif
+#include "bvh/bvh_optix.h"
 
 #include "util/util_foreach.h"
 #include "util/util_logging.h"
@@ -46,10 +40,6 @@ const char *bvh_layout_name(BVHLayout layout)
   switch (layout) {
     case BVH_LAYOUT_BVH2:
       return "BVH2";
-    case BVH_LAYOUT_BVH4:
-      return "BVH4";
-    case BVH_LAYOUT_BVH8:
-      return "BVH8";
     case BVH_LAYOUT_NONE:
       return "NONE";
     case BVH_LAYOUT_EMBREE:
@@ -99,31 +89,31 @@ int BVHStackEntry::encodeIdx() const
 
 /* BVH */
 
-BVH::BVH(const BVHParams &params_, const vector<Mesh *> &meshes_, const vector<Object *> &objects_)
-    : params(params_), meshes(meshes_), objects(objects_)
+BVH::BVH(const BVHParams &params_,
+         const vector<Geometry *> &geometry_,
+         const vector<Object *> &objects_)
+    : params(params_), geometry(geometry_), objects(objects_)
 {
 }
 
 BVH *BVH::create(const BVHParams &params,
-                 const vector<Mesh *> &meshes,
-                 const vector<Object *> &objects)
+                 const vector<Geometry *> &geometry,
+                 const vector<Object *> &objects,
+                 const Device *device)
 {
   switch (params.bvh_layout) {
     case BVH_LAYOUT_BVH2:
-      return new BVH2(params, meshes, objects);
-    case BVH_LAYOUT_BVH4:
-      return new BVH4(params, meshes, objects);
-    case BVH_LAYOUT_BVH8:
-      return new BVH8(params, meshes, objects);
+      return new BVH2(params, geometry, objects);
     case BVH_LAYOUT_EMBREE:
 #ifdef WITH_EMBREE
-      return new BVHEmbree(params, meshes, objects);
+      return new BVHEmbree(params, geometry, objects, device);
 #else
+      (void)device;
       break;
 #endif
     case BVH_LAYOUT_OPTIX:
 #ifdef WITH_OPTIX
-      return new BVHOptiX(params, meshes, objects);
+      return new BVHOptiX(params, geometry, objects);
 #else
       break;
 #endif
@@ -217,36 +207,34 @@ void BVH::refit_primitives(int start, int end, BoundBox &bbox, uint &visibility)
     }
     else {
       /* Primitives. */
-      const Mesh *mesh = ob->mesh;
-
       if (pack.prim_type[prim] & PRIMITIVE_ALL_CURVE) {
         /* Curves. */
-        int str_offset = (params.top_level) ? mesh->curve_offset : 0;
-        Mesh::Curve curve = mesh->get_curve(pidx - str_offset);
+        const Hair *hair = static_cast<const Hair *>(ob->get_geometry());
+        int prim_offset = (params.top_level) ? hair->prim_offset : 0;
+        Hair::Curve curve = hair->get_curve(pidx - prim_offset);
         int k = PRIMITIVE_UNPACK_SEGMENT(pack.prim_type[prim]);
 
-        curve.bounds_grow(k, &mesh->curve_keys[0], &mesh->curve_radius[0], bbox);
-
-        visibility |= PATH_RAY_CURVE;
+        curve.bounds_grow(k, &hair->get_curve_keys()[0], &hair->get_curve_radius()[0], bbox);
 
         /* Motion curves. */
-        if (mesh->use_motion_blur) {
-          Attribute *attr = mesh->curve_attributes.find(ATTR_STD_MOTION_VERTEX_POSITION);
+        if (hair->get_use_motion_blur()) {
+          Attribute *attr = hair->attributes.find(ATTR_STD_MOTION_VERTEX_POSITION);
 
           if (attr) {
-            size_t mesh_size = mesh->curve_keys.size();
-            size_t steps = mesh->motion_steps - 1;
+            size_t hair_size = hair->get_curve_keys().size();
+            size_t steps = hair->get_motion_steps() - 1;
             float3 *key_steps = attr->data_float3();
 
             for (size_t i = 0; i < steps; i++)
-              curve.bounds_grow(k, key_steps + i * mesh_size, &mesh->curve_radius[0], bbox);
+              curve.bounds_grow(k, key_steps + i * hair_size, &hair->get_curve_radius()[0], bbox);
           }
         }
       }
       else {
         /* Triangles. */
-        int tri_offset = (params.top_level) ? mesh->tri_offset : 0;
-        Mesh::Triangle triangle = mesh->get_triangle(pidx - tri_offset);
+        const Mesh *mesh = static_cast<const Mesh *>(ob->get_geometry());
+        int prim_offset = (params.top_level) ? mesh->prim_offset : 0;
+        Mesh::Triangle triangle = mesh->get_triangle(pidx - prim_offset);
         const float3 *vpos = &mesh->verts[0];
 
         triangle.bounds_grow(vpos, bbox);
@@ -276,7 +264,7 @@ void BVH::pack_triangle(int idx, float4 tri_verts[3])
 {
   int tob = pack.prim_object[idx];
   assert(tob >= 0 && tob < objects.size());
-  const Mesh *mesh = objects[tob]->mesh;
+  const Mesh *mesh = static_cast<const Mesh *>(objects[tob]->get_geometry());
 
   int tidx = pack.prim_index[idx];
   Mesh::Triangle t = mesh->get_triangle(tidx);
@@ -324,9 +312,6 @@ void BVH::pack_primitives()
         pack.prim_tri_index[i] = -1;
       }
       pack.prim_visibility[i] = ob->visibility_for_tracing();
-      if (pack.prim_type[i] & PRIMITIVE_ALL_CURVE) {
-        pack.prim_visibility[i] |= PATH_RAY_CURVE;
-      }
     }
     else {
       pack.prim_tri_index[i] = -1;
@@ -339,23 +324,14 @@ void BVH::pack_primitives()
 
 void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
 {
-  /* The BVH's for instances are built separately, but for traversal all
-   * BVH's are stored in global arrays. This function merges them into the
-   * top level BVH, adjusting indexes and offsets where appropriate.
-   */
-  const bool use_qbvh = (params.bvh_layout == BVH_LAYOUT_BVH4);
-  const bool use_obvh = (params.bvh_layout == BVH_LAYOUT_BVH8);
-
   /* Adjust primitive index to point to the triangle in the global array, for
-   * meshes with transform applied and already in the top level BVH.
+   * geometry with transform applied and already in the top level BVH.
    */
-  for (size_t i = 0; i < pack.prim_index.size(); i++)
+  for (size_t i = 0; i < pack.prim_index.size(); i++) {
     if (pack.prim_index[i] != -1) {
-      if (pack.prim_type[i] & PRIMITIVE_ALL_CURVE)
-        pack.prim_index[i] += objects[pack.prim_object[i]]->mesh->curve_offset;
-      else
-        pack.prim_index[i] += objects[pack.prim_object[i]]->mesh->tri_offset;
+      pack.prim_index[i] += objects[pack.prim_object[i]]->get_geometry()->prim_offset;
     }
+  }
 
   /* track offsets of instanced BVH data in global array */
   size_t prim_offset = pack.prim_index.size();
@@ -375,10 +351,10 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
   size_t pack_leaf_nodes_offset = leaf_nodes_size;
   size_t object_offset = 0;
 
-  foreach (Mesh *mesh, meshes) {
-    BVH *bvh = mesh->bvh;
+  foreach (Geometry *geom, geometry) {
+    BVH *bvh = geom->bvh;
 
-    if (mesh->need_build_bvh(params.bvh_layout)) {
+    if (geom->need_build_bvh(params.bvh_layout)) {
       prim_index_size += bvh->pack.prim_index.size();
       prim_tri_verts_size += bvh->pack.prim_tri_verts.size();
       nodes_size += bvh->pack.nodes.size();
@@ -410,36 +386,35 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
   int4 *pack_leaf_nodes = (pack.leaf_nodes.size()) ? &pack.leaf_nodes[0] : NULL;
   float2 *pack_prim_time = (pack.prim_time.size()) ? &pack.prim_time[0] : NULL;
 
-  map<Mesh *, int> mesh_map;
+  map<Geometry *, int> geometry_map;
 
   /* merge */
   foreach (Object *ob, objects) {
-    Mesh *mesh = ob->mesh;
+    Geometry *geom = ob->get_geometry();
 
     /* We assume that if mesh doesn't need own BVH it was already included
      * into a top-level BVH and no packing here is needed.
      */
-    if (!mesh->need_build_bvh(params.bvh_layout)) {
+    if (!geom->need_build_bvh(params.bvh_layout)) {
       pack.object_node[object_offset++] = 0;
       continue;
     }
 
     /* if mesh already added once, don't add it again, but used set
      * node offset for this object */
-    map<Mesh *, int>::iterator it = mesh_map.find(mesh);
+    map<Geometry *, int>::iterator it = geometry_map.find(geom);
 
-    if (mesh_map.find(mesh) != mesh_map.end()) {
+    if (geometry_map.find(geom) != geometry_map.end()) {
       int noffset = it->second;
       pack.object_node[object_offset++] = noffset;
       continue;
     }
 
-    BVH *bvh = mesh->bvh;
+    BVH *bvh = geom->bvh;
 
     int noffset = nodes_offset;
     int noffset_leaf = nodes_leaf_offset;
-    int mesh_tri_offset = mesh->tri_offset;
-    int mesh_curve_offset = mesh->curve_offset;
+    int geom_prim_offset = geom->prim_offset;
 
     /* fill in node indexes for instances */
     if (bvh->pack.root_index == -1)
@@ -447,7 +422,7 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
     else
       pack.object_node[object_offset++] = noffset;
 
-    mesh_map[mesh] = pack.object_node[object_offset - 1];
+    geometry_map[geom] = pack.object_node[object_offset - 1];
 
     /* merge primitive, object and triangle indexes */
     if (bvh->pack.prim_index.size()) {
@@ -460,11 +435,11 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
 
       for (size_t i = 0; i < bvh_prim_index_size; i++) {
         if (bvh->pack.prim_type[i] & PRIMITIVE_ALL_CURVE) {
-          pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + mesh_curve_offset;
+          pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + geom_prim_offset;
           pack_prim_tri_index[pack_prim_index_offset] = -1;
         }
         else {
-          pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + mesh_tri_offset;
+          pack_prim_index[pack_prim_index_offset] = bvh_prim_index[i] + geom_prim_offset;
           pack_prim_tri_index[pack_prim_index_offset] = bvh_prim_tri_index[i] +
                                                         pack_prim_tri_verts_offset;
         }
@@ -511,53 +486,21 @@ void BVH::pack_instances(size_t nodes_size, size_t leaf_nodes_size)
       for (size_t i = 0, j = 0; i < bvh_nodes_size; j++) {
         size_t nsize, nsize_bbox;
         if (bvh_nodes[i].x & PATH_RAY_NODE_UNALIGNED) {
-          if (use_obvh) {
-            nsize = BVH_UNALIGNED_ONODE_SIZE;
-            nsize_bbox = BVH_UNALIGNED_ONODE_SIZE - 1;
-          }
-          else {
-            nsize = use_qbvh ? BVH_UNALIGNED_QNODE_SIZE : BVH_UNALIGNED_NODE_SIZE;
-            nsize_bbox = (use_qbvh) ? BVH_UNALIGNED_QNODE_SIZE - 1 : 0;
-          }
+          nsize = BVH_UNALIGNED_NODE_SIZE;
+          nsize_bbox = 0;
         }
         else {
-          if (use_obvh) {
-            nsize = BVH_ONODE_SIZE;
-            nsize_bbox = BVH_ONODE_SIZE - 1;
-          }
-          else {
-            nsize = (use_qbvh) ? BVH_QNODE_SIZE : BVH_NODE_SIZE;
-            nsize_bbox = (use_qbvh) ? BVH_QNODE_SIZE - 1 : 0;
-          }
+          nsize = BVH_NODE_SIZE;
+          nsize_bbox = 0;
         }
 
         memcpy(pack_nodes + pack_nodes_offset, bvh_nodes + i, nsize_bbox * sizeof(int4));
 
         /* Modify offsets into arrays */
         int4 data = bvh_nodes[i + nsize_bbox];
-        int4 data1 = bvh_nodes[i + nsize_bbox - 1];
-        if (use_obvh) {
-          data.z += (data.z < 0) ? -noffset_leaf : noffset;
-          data.w += (data.w < 0) ? -noffset_leaf : noffset;
-          data.x += (data.x < 0) ? -noffset_leaf : noffset;
-          data.y += (data.y < 0) ? -noffset_leaf : noffset;
-          data1.z += (data1.z < 0) ? -noffset_leaf : noffset;
-          data1.w += (data1.w < 0) ? -noffset_leaf : noffset;
-          data1.x += (data1.x < 0) ? -noffset_leaf : noffset;
-          data1.y += (data1.y < 0) ? -noffset_leaf : noffset;
-        }
-        else {
-          data.z += (data.z < 0) ? -noffset_leaf : noffset;
-          data.w += (data.w < 0) ? -noffset_leaf : noffset;
-          if (use_qbvh) {
-            data.x += (data.x < 0) ? -noffset_leaf : noffset;
-            data.y += (data.y < 0) ? -noffset_leaf : noffset;
-          }
-        }
+        data.z += (data.z < 0) ? -noffset_leaf : noffset;
+        data.w += (data.w < 0) ? -noffset_leaf : noffset;
         pack_nodes[pack_nodes_offset + nsize_bbox] = data;
-        if (use_obvh) {
-          pack_nodes[pack_nodes_offset + nsize_bbox - 1] = data1;
-        }
 
         /* Usually this copies nothing, but we better
          * be prepared for possible node size extension.

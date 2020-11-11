@@ -15,9 +15,21 @@
  */
 
 #include "blender/blender_device.h"
+#include "blender/blender_session.h"
 #include "blender/blender_util.h"
 
+#include "util/util_foreach.h"
+
 CCL_NAMESPACE_BEGIN
+
+enum ComputeDevice {
+  COMPUTE_DEVICE_CPU = 0,
+  COMPUTE_DEVICE_CUDA = 1,
+  COMPUTE_DEVICE_OPENCL = 2,
+  COMPUTE_DEVICE_OPTIX = 3,
+
+  COMPUTE_DEVICE_NUM
+};
 
 int blender_device_threads(BL::Scene &b_scene)
 {
@@ -31,6 +43,17 @@ int blender_device_threads(BL::Scene &b_scene)
 
 DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scene, bool background)
 {
+  if (BlenderSession::device_override != DEVICE_MASK_ALL) {
+    vector<DeviceInfo> devices = Device::available_devices(BlenderSession::device_override);
+
+    if (devices.empty()) {
+      return Device::dummy_device("Found no Cycles device of the specified type");
+    }
+
+    int threads = blender_device_threads(b_scene);
+    return Device::get_multi_device(devices, threads, background);
+  }
+
   PointerRNA cscene = RNA_pointer_get(&b_scene.ptr, "cycles");
 
   /* Default to CPU device. */
@@ -40,7 +63,7 @@ DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scen
     /* Find network device. */
     vector<DeviceInfo> devices = Device::available_devices(DEVICE_MASK_NETWORK);
     if (!devices.empty()) {
-      device = devices.front();
+      return devices.front();
     }
   }
   else if (get_enum(cscene, "device") == 1) {
@@ -57,14 +80,6 @@ DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scen
     }
 
     /* Test if we are using GPU devices. */
-    enum ComputeDevice {
-      COMPUTE_DEVICE_CPU = 0,
-      COMPUTE_DEVICE_CUDA = 1,
-      COMPUTE_DEVICE_OPENCL = 2,
-      COMPUTE_DEVICE_OPTIX = 3,
-      COMPUTE_DEVICE_NUM = 4,
-    };
-
     ComputeDevice compute_device = (ComputeDevice)get_enum(
         cpreferences, "compute_device_type", COMPUTE_DEVICE_NUM, COMPUTE_DEVICE_CPU);
 
@@ -103,6 +118,10 @@ DeviceInfo blender_device_info(BL::Preferences &b_preferences, BL::Scene &b_scen
         device = Device::get_multi_device(used_devices, threads, background);
       }
       /* Else keep using the CPU device that was set before. */
+
+      if (!get_boolean(cpreferences, "peer_memory")) {
+        device.has_peer_memory = false;
+      }
     }
   }
 

@@ -17,13 +17,13 @@
  */
 
 #include "COM_MathNode.h"
-#include "COM_MathBaseOperation.h"
 #include "COM_ExecutionSystem.h"
+#include "COM_MathBaseOperation.h"
 
 void MathNode::convertToOperations(NodeConverter &converter,
                                    const CompositorContext & /*context*/) const
 {
-  MathBaseOperation *operation = NULL;
+  MathBaseOperation *operation = nullptr;
 
   switch (this->getbNode()->custom1) {
     case NODE_MATH_ADD:

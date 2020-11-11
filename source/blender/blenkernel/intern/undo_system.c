@@ -24,10 +24,10 @@
 
 #include "CLG_log.h"
 
-#include "BLI_utildefines.h"
-#include "BLI_sys_types.h"
 #include "BLI_listbase.h"
 #include "BLI_string.h"
+#include "BLI_sys_types.h"
+#include "BLI_utildefines.h"
 
 #include "BLT_translation.h"
 
@@ -36,7 +36,7 @@
 
 #include "BKE_context.h"
 #include "BKE_global.h"
-#include "BKE_library_override.h"
+#include "BKE_lib_override.h"
 #include "BKE_main.h"
 #include "BKE_undo_system.h"
 
@@ -95,7 +95,7 @@ static bool g_undo_callback_running = false;
 /** \name Public Undo Types
  *
  * Unfortunately we need this for a handful of places.
- */
+ * \{ */
 const UndoType *BKE_UNDOSYS_TYPE_IMAGE = NULL;
 const UndoType *BKE_UNDOSYS_TYPE_MEMFILE = NULL;
 const UndoType *BKE_UNDOSYS_TYPE_PAINTCURVE = NULL;
@@ -110,7 +110,7 @@ static ListBase g_undo_types = {NULL, NULL};
 
 static const UndoType *BKE_undosys_type_from_context(bContext *C)
 {
-  for (const UndoType *ut = g_undo_types.first; ut; ut = ut->next) {
+  LISTBASE_FOREACH (const UndoType *, ut, &g_undo_types) {
     /* No poll means we don't check context. */
     if (ut->poll && ut->poll(C)) {
       return ut;
@@ -143,7 +143,7 @@ static void undosys_id_ref_resolve(void *user_data, UndoRefID *id_ref)
    * for now it's not too bad since it only runs when we access undo! */
   Main *bmain = user_data;
   ListBase *lb = which_libbase(bmain, GS(id_ref->name));
-  for (ID *id = lb->first; id; id = id->next) {
+  LISTBASE_FOREACH (ID *, id, lb) {
     if (STREQ(id_ref->name, id->name) && (id->lib == NULL)) {
       id_ref->ptr = id;
       break;
@@ -163,6 +163,7 @@ static bool undosys_step_encode(bContext *C, Main *bmain, UndoStack *ustack, Und
        * not all members are filled in. */
       us->type->step_foreach_ID_ref(us, undosys_id_ref_store, bmain);
     }
+
 #ifdef WITH_GLOBAL_UNDO_CORRECT_ORDER
     if (us->type == BKE_UNDOSYS_TYPE_MEMFILE) {
       ustack->step_active_memfile = us;
@@ -193,7 +194,7 @@ static void undosys_step_decode(
              * undo step will be correctly resolved, see: T56163. */
             undosys_step_decode(C, bmain, ustack, us_iter, dir, false);
             /* May have been freed on memfile read. */
-            bmain = G.main;
+            bmain = G_MAIN;
           }
           break;
         }
@@ -356,7 +357,7 @@ void BKE_undosys_stack_init_from_main(UndoStack *ustack, struct Main *bmain)
 void BKE_undosys_stack_init_from_context(UndoStack *ustack, bContext *C)
 {
   const UndoType *ut = BKE_undosys_type_from_context(C);
-  if ((ut != NULL) && (ut != BKE_UNDOSYS_TYPE_MEMFILE)) {
+  if (!ELEM(ut, NULL, BKE_UNDOSYS_TYPE_MEMFILE)) {
     BKE_undosys_step_push_with_type(ustack, C, IFACE_("Original Mode"), ut);
   }
 }
@@ -398,7 +399,7 @@ UndoStep *BKE_undosys_stack_init_or_active_with_type(UndoStack *ustack, const Un
 void BKE_undosys_stack_limit_steps_and_memory(UndoStack *ustack, int steps, size_t memory_limit)
 {
   UNDO_NESTED_ASSERT(false);
-  if (!(steps || memory_limit)) {
+  if ((steps == -1) && (memory_limit != 0)) {
     return;
   }
 
@@ -415,7 +416,7 @@ void BKE_undosys_stack_limit_steps_and_memory(UndoStack *ustack, int steps, size
         break;
       }
     }
-    if (steps) {
+    if (steps != -1) {
       if (us_count == steps) {
         break;
       }
@@ -426,16 +427,18 @@ void BKE_undosys_stack_limit_steps_and_memory(UndoStack *ustack, int steps, size
   }
 
   if (us) {
-    if (us->prev && us->prev->prev) {
-      us = us->prev;
-    }
-
 #ifdef WITH_GLOBAL_UNDO_KEEP_ONE
     /* Hack, we need to keep at least one BKE_UNDOSYS_TYPE_MEMFILE. */
     if (us->type != BKE_UNDOSYS_TYPE_MEMFILE) {
       us_exclude = us->prev;
       while (us_exclude && us_exclude->type != BKE_UNDOSYS_TYPE_MEMFILE) {
         us_exclude = us_exclude->prev;
+      }
+      /* Once this is outside the given number of 'steps', undoing onto this state
+       * may skip past many undo steps which is confusing, instead,
+       * disallow stepping onto this state entirely. */
+      if (us_exclude) {
+        us_exclude->skip = true;
       }
     }
 #endif
@@ -463,19 +466,18 @@ UndoStep *BKE_undosys_step_push_init_with_type(UndoStack *ustack,
     }
 
     UndoStep *us = MEM_callocN(ut->step_size, __func__);
-    CLOG_INFO(&LOG, 1, "addr=%p, name='%s', type='%s'", us, name, ut->name);
     if (name != NULL) {
       BLI_strncpy(us->name, name, sizeof(us->name));
     }
     us->type = ut;
     ustack->step_init = us;
+    CLOG_INFO(&LOG, 1, "addr=%p, name='%s', type='%s'", us, us->name, us->type->name);
     ut->step_encode_init(C, us);
     undosys_stack_validate(ustack, false);
     return us;
   }
-  else {
-    return NULL;
-  }
+
+  return NULL;
 }
 
 UndoStep *BKE_undosys_step_push_init(UndoStack *ustack, bContext *C, const char *name)
@@ -504,9 +506,7 @@ bool BKE_undosys_step_push_with_type(UndoStack *ustack,
 
   /* Might not be final place for this to be called - probably only want to call it from some
    * undo handlers, not all of them? */
-  if (BKE_override_library_is_enabled()) {
-    BKE_main_override_library_operations_create(G_MAIN, false);
-  }
+  BKE_lib_override_library_main_operations_create(G_MAIN, false);
 
   /* Remove all undos after (also when 'ustack->step_active == NULL'). */
   while (ustack->steps.last != ustack->step_active) {
@@ -549,7 +549,11 @@ bool BKE_undosys_step_push_with_type(UndoStack *ustack,
       BLI_strncpy(us->name, name, sizeof(us->name));
     }
     us->type = ut;
+    /* True by default, code needs to explicitely set it to false if necessary. */
+    us->use_old_bmain_data = true;
     /* Initialized, not added yet. */
+
+    CLOG_INFO(&LOG, 1, "addr=%p, name='%s', type='%s'", us, us->name, us->type->name);
 
     if (!undosys_step_encode(C, G_MAIN, ustack, us)) {
       MEM_freeN(us);
@@ -576,6 +580,12 @@ bool BKE_undosys_step_push_with_type(UndoStack *ustack,
 #endif
       ustack->step_active = us;
     }
+  }
+
+  if (ustack->group_level > 0) {
+    /* Temporarily set skip for the active step.
+     * This is an invalid state which must be corrected once the last group ends. */
+    ustack->step_active->skip = true;
   }
 
   undosys_stack_validate(ustack, true);
@@ -669,7 +679,15 @@ bool BKE_undosys_step_undo_with_data_ex(UndoStack *ustack,
     us = us_prev;
   }
 
-  if (us != NULL) {
+  /* This will be active once complete. */
+  UndoStep *us_active = us_prev;
+  if (use_skip) {
+    while (us_active && us_active->skip) {
+      us_active = us_active->prev;
+    }
+  }
+
+  if ((us != NULL) && (us_active != NULL)) {
     CLOG_INFO(&LOG, 1, "addr=%p, name='%s', type='%s'", us, us->name, us->type->name);
 
     /* Handle accumulate steps. */
@@ -683,13 +701,6 @@ bool BKE_undosys_step_undo_with_data_ex(UndoStack *ustack,
         undosys_step_decode(C, G_MAIN, ustack, us_iter, -1, false);
 
         us_iter = us_iter->prev;
-      }
-    }
-
-    UndoStep *us_active = us_prev;
-    if (use_skip) {
-      while (us_active->skip && us_active->prev) {
-        us_active = us_active->prev;
       }
     }
 
@@ -741,7 +752,15 @@ bool BKE_undosys_step_redo_with_data_ex(UndoStack *ustack,
   /* Unlike undo accumulate, we always use the next. */
   us = us_next;
 
-  if (us != NULL) {
+  /* This will be active once complete. */
+  UndoStep *us_active = us_next;
+  if (use_skip) {
+    while (us_active && us_active->skip) {
+      us_active = us_active->next;
+    }
+  }
+
+  if ((us != NULL) && (us_active != NULL)) {
     CLOG_INFO(&LOG, 1, "addr=%p, name='%s', type='%s'", us, us->name, us->type->name);
 
     /* Handle accumulate steps. */
@@ -750,13 +769,6 @@ bool BKE_undosys_step_redo_with_data_ex(UndoStack *ustack,
       while (us_iter != us) {
         undosys_step_decode(C, G_MAIN, ustack, us_iter, 1, false);
         us_iter = us_iter->next;
-      }
-    }
-
-    UndoStep *us_active = us_next;
-    if (use_skip) {
-      while (us_active->skip && us_active->prev) {
-        us_active = us_active->next;
       }
     }
 
@@ -845,16 +857,55 @@ void BKE_undosys_type_free_all(void)
 /** \} */
 
 /* -------------------------------------------------------------------- */
+/** \name Undo Stack Grouping
+ *
+ * This enables skip while group-level is set.
+ * In general it's not allowed that #UndoStack.step_active have 'skip' enabled.
+ *
+ * This rule is relaxed for grouping, however it's important each call to
+ * #BKE_undosys_stack_group_begin has a matching #BKE_undosys_stack_group_end.
+ *
+ * - Levels are used so nesting is supported, where the last call to #BKE_undosys_stack_group_end
+ *   will set the active undo step that should not be skipped.
+ *
+ * - Correct begin/end is checked by an assert since any errors here will cause undo
+ *   to consider all steps part of one large group.
+ *
+ * - Calls to begin/end with no undo steps being pushed is supported and does nothing.
+ *
+ * \{ */
+
+void BKE_undosys_stack_group_begin(UndoStack *ustack)
+{
+  BLI_assert(ustack->group_level >= 0);
+  ustack->group_level += 1;
+}
+
+void BKE_undosys_stack_group_end(UndoStack *ustack)
+{
+  ustack->group_level -= 1;
+  BLI_assert(ustack->group_level >= 0);
+
+  if (ustack->group_level == 0) {
+    if (LIKELY(ustack->step_active != NULL)) {
+      ustack->step_active->skip = false;
+    }
+  }
+}
+
+/** \} */
+
+/* -------------------------------------------------------------------- */
 /** \name ID Reference Utilities
  *
  * Unfortunately we need this for a handful of places.
- */
+ * \{ */
 
 static void UNUSED_FUNCTION(BKE_undosys_foreach_ID_ref(UndoStack *ustack,
                                                        UndoTypeForEachIDRefFn foreach_ID_ref_fn,
                                                        void *user_data))
 {
-  for (UndoStep *us = ustack->steps.first; us; us = us->next) {
+  LISTBASE_FOREACH (UndoStep *, us, &ustack->steps) {
     const UndoType *ut = us->type;
     if (ut->step_foreach_ID_ref != NULL) {
       ut->step_foreach_ID_ref(us, foreach_ID_ref_fn, user_data);
@@ -873,13 +924,14 @@ void BKE_undosys_print(UndoStack *ustack)
   printf("Undo %d Steps (*: active, #=applied, M=memfile-active, S=skip)\n",
          BLI_listbase_count(&ustack->steps));
   int index = 0;
-  for (UndoStep *us = ustack->steps.first; us; us = us->next) {
-    printf("[%c%c%c%c] %3d type='%s', name='%s'\n",
+  LISTBASE_FOREACH (UndoStep *, us, &ustack->steps) {
+    printf("[%c%c%c%c] %3d {%p} type='%s', name='%s'\n",
            (us == ustack->step_active) ? '*' : ' ',
            us->is_applied ? '#' : ' ',
            (us == ustack->step_active_memfile) ? 'M' : ' ',
            us->skip ? 'S' : ' ',
            index,
+           (void *)us,
            us->type->name,
            us->name);
     index++;

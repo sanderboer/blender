@@ -46,8 +46,8 @@ class CYCLES_OT_use_shading_nodes(Operator):
 
 class CYCLES_OT_add_aov(bpy.types.Operator):
     """Add an AOV pass"""
-    bl_idname="cycles.add_aov"
-    bl_label="Add AOV"
+    bl_idname = "cycles.add_aov"
+    bl_label = "Add AOV"
 
     def execute(self, context):
         view_layer = context.view_layer
@@ -61,8 +61,8 @@ class CYCLES_OT_add_aov(bpy.types.Operator):
 
 class CYCLES_OT_remove_aov(bpy.types.Operator):
     """Remove an AOV pass"""
-    bl_idname="cycles.remove_aov"
-    bl_label="Remove AOV"
+    bl_idname = "cycles.remove_aov"
+    bl_label = "Remove AOV"
 
     def execute(self, context):
         view_layer = context.view_layer
@@ -153,12 +153,12 @@ class CYCLES_OT_denoise_animation(Operator):
             self.report({'ERROR'}, str(e))
             return {'FINISHED'}
 
-        self.report({'INFO'}, "Denoising completed.")
+        self.report({'INFO'}, "Denoising completed")
         return {'FINISHED'}
 
 
 class CYCLES_OT_merge_images(Operator):
-    "Combine OpenEXR multilayer images rendered with different sample" \
+    "Combine OpenEXR multilayer images rendered with different sample " \
     "ranges into one image with reduced noise"
     bl_idname = "cycles.merge_images"
     bl_label = "Merge Images"
@@ -202,6 +202,7 @@ classes = (
     CYCLES_OT_denoise_animation,
     CYCLES_OT_merge_images
 )
+
 
 def register():
     from bpy.utils import register_class

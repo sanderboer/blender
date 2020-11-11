@@ -25,17 +25,15 @@
 #include "BLI_math.h"
 #include "BLI_math_color.h"
 
-extern "C" {
 #include "BKE_movieclip.h"
 #include "BKE_node.h"
 #include "BKE_tracking.h"
-}
 
 /* ******** PlaneTrackCommon ******** */
 
 PlaneTrackCommon::PlaneTrackCommon()
 {
-  this->m_movieClip = NULL;
+  this->m_movieClip = nullptr;
   this->m_framenumber = 0;
   this->m_trackingObjectName[0] = '\0';
   this->m_planeTrackName[0] = '\0';

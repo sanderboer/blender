@@ -21,11 +21,11 @@
  * \ingroup cmpnodes
  */
 
-#include "node_composite_util.h"
 #include "BLI_assert.h"
 #include "BLI_dynstr.h"
 #include "BLI_hash_mm3.h"
 #include "BLI_utildefines.h"
+#include "node_composite_util.h"
 
 /* this is taken from the cryptomatte specification 1.0 */
 
@@ -65,7 +65,7 @@ static void cryptomatte_add(NodeCryptomatte *n, float f)
 
       /* Find the next separator. */
       char *token_end = strchr(n->matte_id + start, ',');
-      if (token_end == NULL || token_end == n->matte_id + start) {
+      if (ELEM(token_end, NULL, n->matte_id + start)) {
         token_end = n->matte_id + end;
       }
       /* Be aware that token_len still contains any trailing white space. */
@@ -144,7 +144,7 @@ static void cryptomatte_remove(NodeCryptomatte *n, float f)
 
     /* Find the next separator. */
     char *token_end = strchr(n->matte_id + start + 1, ',');
-    if (token_end == NULL || token_end == n->matte_id + start) {
+    if (ELEM(token_end, NULL, n->matte_id + start)) {
       token_end = n->matte_id + end;
     }
     /* Be aware that token_len still contains any trailing white space. */
@@ -196,10 +196,10 @@ static void cryptomatte_remove(NodeCryptomatte *n, float f)
 }
 
 static bNodeSocketTemplate outputs[] = {
-    {SOCK_RGBA, 0, N_("Image")},
-    {SOCK_FLOAT, 0, N_("Matte")},
-    {SOCK_RGBA, 0, N_("Pick")},
-    {-1, 0, ""},
+    {SOCK_RGBA, N_("Image")},
+    {SOCK_FLOAT, N_("Matte")},
+    {SOCK_RGBA, N_("Pick")},
+    {-1, ""},
 };
 
 void ntreeCompositCryptomatteSyncFromAdd(bNodeTree *UNUSED(ntree), bNode *node)

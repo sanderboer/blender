@@ -30,6 +30,11 @@ else()
   set(CLANG_GENERATOR "Unix Makefiles")
 endif()
 
+if(APPLE)
+  set(CLANG_EXTRA_ARGS ${CLANG_EXTRA_ARGS}
+    -DLIBXML2_LIBRARY=${LIBDIR}/xml2/lib/libxml2.a
+  )
+endif()
 
 ExternalProject_Add(external_clang
   URL ${CLANG_URI}
@@ -46,9 +51,7 @@ if(MSVC)
     set(CLANG_HARVEST_COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/clang/ ${HARVEST_TARGET}/llvm/)
   else()
     set(CLANG_HARVEST_COMMAND
-      ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/clang/lib/ ${HARVEST_TARGET}/llvm/debug/lib/ &&
-      ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/clang/bin/ ${HARVEST_TARGET}/llvm/debug/bin/ &&
-      ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/clang/include/ ${HARVEST_TARGET}/llvm/debug/include/
+      ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/clang/lib/ ${HARVEST_TARGET}/llvm/debug/lib/
     )
   endif()
   ExternalProject_Add_Step(external_clang after_install
@@ -61,3 +64,11 @@ add_dependencies(
   external_clang
   ll
 )
+
+# We currently do not build libxml2 on Windows.
+if(NOT WIN32)
+  add_dependencies(
+    external_clang
+    external_xml2
+  )
+endif()

@@ -21,8 +21,7 @@
  * \ingroup gpu
  */
 
-#ifndef __GPU_MATRIX_H__
-#define __GPU_MATRIX_H__
+#pragma once
 
 #include "BLI_sys_types.h"
 
@@ -30,7 +29,7 @@
 extern "C" {
 #endif
 
-struct GPUShaderInterface;
+struct GPUShader;
 
 void GPU_matrix_reset(void); /* to Identity transform & empty stack */
 
@@ -90,6 +89,8 @@ void GPU_matrix_identity_projection_set(void);
 void GPU_matrix_projection_set(const float m[4][4]);
 
 void GPU_matrix_ortho_set(float left, float right, float bottom, float top, float near, float far);
+void GPU_matrix_ortho_set_z(float near, float far);
+
 void GPU_matrix_frustum_set(
     float left, float right, float bottom, float top, float near, float far);
 void GPU_matrix_perspective_set(float fovy, float aspect, float near, float far);
@@ -100,11 +101,15 @@ struct GPUMatrixUnproject_Precalc {
   float model_inverted[4][4];
   float view[4];
   bool is_persp;
-  /** Result of 'projmat_dimensions'. */
+  /**
+   * Result of #projmat_dimensions_db.
+   * Using double precision here is important as far clipping ranges
+   * can cause divide-by-zero when using float, see: T66937.
+   */
   struct {
-    float xmin, xmax;
-    float ymin, ymax;
-    float zmin, zmax;
+    double xmin, xmax;
+    double ymin, ymax;
+    double zmin, zmax;
   } dims;
 };
 
@@ -142,8 +147,12 @@ const float (*GPU_matrix_normal_get(float m[3][3]))[3];
 const float (*GPU_matrix_normal_inverse_get(float m[3][3]))[3];
 
 /* set uniform values for currently bound shader */
-void GPU_matrix_bind(const struct GPUShaderInterface *);
+void GPU_matrix_bind(struct GPUShader *shader);
 bool GPU_matrix_dirty_get(void); /* since last bind */
+
+/* own working polygon offset */
+float GPU_polygon_offset_calc(const float (*winmat)[4], float viewdist, float dist);
+void GPU_polygon_offset(float viewdist, float dist);
 
 /* Python API needs to be able to inspect the stack so errors raise exceptions
  * instead of crashing. */
@@ -222,4 +231,7 @@ int GPU_matrix_stack_level_get_projection(void);
 #  define GPU_matrix_normal_inverse_get(x) GPU_matrix_normal_inverse_get(_GPU_MAT3_CAST(x))
 #endif /* SUPPRESS_GENERIC_MATRIX_API */
 
-#endif /* __GPU_MATRIX_H__ */
+/* Not part of the GPU_matrix API,
+ * however we need to check these limits in code that calls into these API's. */
+#define GPU_MATRIX_ORTHO_CLIP_NEAR_DEFAULT (-100)
+#define GPU_MATRIX_ORTHO_CLIP_FAR_DEFAULT (100)

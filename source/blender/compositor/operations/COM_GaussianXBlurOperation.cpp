@@ -17,19 +17,17 @@
  */
 
 #include "COM_GaussianXBlurOperation.h"
-#include "COM_OpenCLDevice.h"
 #include "BLI_math.h"
+#include "COM_OpenCLDevice.h"
 #include "MEM_guardedalloc.h"
 
-extern "C" {
 #include "RE_pipeline.h"
-}
 
 GaussianXBlurOperation::GaussianXBlurOperation() : BlurBaseOperation(COM_DT_COLOR)
 {
-  this->m_gausstab = NULL;
+  this->m_gausstab = nullptr;
 #ifdef __SSE2__
-  this->m_gausstab_sse = NULL;
+  this->m_gausstab_sse = nullptr;
 #endif
   this->m_filtersize = 0;
 }
@@ -40,7 +38,7 @@ void *GaussianXBlurOperation::initializeTileData(rcti * /*rect*/)
   if (!this->m_sizeavailable) {
     updateGauss();
   }
-  void *buffer = getInputOperation(0)->initializeTileData(NULL);
+  void *buffer = getInputOperation(0)->initializeTileData(nullptr);
   unlockMutex();
   return buffer;
 }
@@ -65,7 +63,7 @@ void GaussianXBlurOperation::initExecution()
 
 void GaussianXBlurOperation::updateGauss()
 {
-  if (this->m_gausstab == NULL) {
+  if (this->m_gausstab == nullptr) {
     updateSize();
     float rad = max_ff(m_size * m_data.sizex, 0.0f);
     m_filtersize = min_ii(ceil(rad), MAX_GAUSSTAB_RADIUS);
@@ -127,14 +125,14 @@ void GaussianXBlurOperation::executeOpenCL(OpenCLDevice *device,
                                            list<cl_kernel> * /*clKernelsToCleanUp*/)
 {
   cl_kernel gaussianXBlurOperationKernel = device->COM_clCreateKernel(
-      "gaussianXBlurOperationKernel", NULL);
+      "gaussianXBlurOperationKernel", nullptr);
   cl_int filter_size = this->m_filtersize;
 
   cl_mem gausstab = clCreateBuffer(device->getContext(),
                                    CL_MEM_READ_ONLY | CL_MEM_USE_HOST_PTR,
                                    sizeof(float) * (this->m_filtersize * 2 + 1),
                                    this->m_gausstab,
-                                   NULL);
+                                   nullptr);
 
   device->COM_clAttachMemoryBufferToKernelParameter(gaussianXBlurOperationKernel,
                                                     0,
@@ -161,12 +159,12 @@ void GaussianXBlurOperation::deinitExecution()
 
   if (this->m_gausstab) {
     MEM_freeN(this->m_gausstab);
-    this->m_gausstab = NULL;
+    this->m_gausstab = nullptr;
   }
 #ifdef __SSE2__
   if (this->m_gausstab_sse) {
     MEM_freeN(this->m_gausstab_sse);
-    this->m_gausstab_sse = NULL;
+    this->m_gausstab_sse = nullptr;
   }
 #endif
 
@@ -191,7 +189,7 @@ bool GaussianXBlurOperation::determineDependingAreaOfInterest(rcti *input,
     }
   }
   {
-    if (this->m_sizeavailable && this->m_gausstab != NULL) {
+    if (this->m_sizeavailable && this->m_gausstab != nullptr) {
       newInput.xmax = input->xmax + this->m_filtersize + 1;
       newInput.xmin = input->xmin - this->m_filtersize - 1;
       newInput.ymax = input->ymax;
