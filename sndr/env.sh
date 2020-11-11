@@ -11,7 +11,7 @@ NUM_BUILD_PROCS=$(expr $(sysctl -n hw.ncpu 2> /dev/null || cat /proc/cpuinfo | g
 NUM_BUILD_PROCS=6
 INSTALL_DIR="/opt/blender-${TODAY}"
 MAUCPY="/opt/miniconda3/envs/maucpy"
-PY_INC="${MAUCPY}/include/python3.7m/Python.h"
+PY_INC="${MAUCPY}/include/python3.7m/"
 PY_LIB="${MAUCPY}/lib/libpython3.7m.so"
 
 
