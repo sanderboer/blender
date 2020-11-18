@@ -13,7 +13,10 @@ PYDIR="/opt/miniconda3/envs/vabi"
 PY_INC="${PYDIR}/include/python3.7m/"
 PY_LIB="${PYDIR}/lib/libpython3.7m.so"
 
-INSTALL_DIR="${PYDIR}/lib/python3.7/site-packages/"
+
+# INSTALL_DIR="${PYDIR}/lib/python3.7/site-packages/"
+INSTALL_DIR="${ROOT_DIR}/pyblender-py3.7"
+
 
 echo "DIR:              ${DIR}"
 echo "ROOT_DIR:         ${ROOT_DIR}"
