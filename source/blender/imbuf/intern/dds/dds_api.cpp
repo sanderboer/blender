@@ -23,10 +23,10 @@
 #include <DirectDrawSurface.h>
 #include <FlipDXT.h>
 #include <Stream.h>
+#include <cstddef>
+#include <cstdio> /* printf */
 #include <dds_api.h>
 #include <fstream>
-#include <stddef.h>
-#include <stdio.h> /* printf */
 
 #if defined(WIN32)
 #  include "utfconv.h"
@@ -72,7 +72,6 @@ bool imb_save_dds(struct ImBuf *ibuf, const char *name, int /*flags*/)
   return true;
 }
 
-/* note: use at most first 32 bytes */
 bool imb_is_a_dds(const unsigned char *mem, const size_t size)
 {
   if (size < 8) {

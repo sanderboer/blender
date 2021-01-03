@@ -235,7 +235,8 @@ static int rna_Image_file_format_get(PointerRNA *ptr)
 {
   Image *image = (Image *)ptr->data;
   ImBuf *ibuf = BKE_image_acquire_ibuf(image, NULL, NULL);
-  int imtype = BKE_image_ftype_to_imtype(ibuf ? ibuf->ftype : 0, ibuf ? &ibuf->foptions : NULL);
+  int imtype = BKE_image_ftype_to_imtype(ibuf ? ibuf->ftype : IMB_FTYPE_NONE,
+                                         ibuf ? &ibuf->foptions : NULL);
 
   BKE_image_release_ibuf(image, ibuf, NULL);
 
@@ -1135,7 +1136,7 @@ static void rna_def_image(BlenderRNA *brna)
   RNA_def_property_boolean_negative_sdna(prop, NULL, "flag", IMA_HIGH_BITDEPTH);
   RNA_def_property_ui_text(prop,
                            "Half Float Precision",
-                           "Use 16bits per channel to lower the memory usage during rendering");
+                           "Use 16 bits per channel to lower the memory usage during rendering");
   RNA_def_property_update(prop, NC_IMAGE | ND_DISPLAY, "rna_Image_gpu_texture_update");
 
   /* multiview */
