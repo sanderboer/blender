@@ -1,0 +1,31 @@
+name: vabi
+channels:
+  - dlr-sc
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.7.4
+  - black
+  - traitlets
+  - ipython
+  - pyproj
+  - owslib
+  - reportlab
+  - Pillow
+  - aggdraw
+  - python-language-server
+  - pythonnet
+  - pythonocc-core
+  - gmsh
+  - ifcopenshell
+  - pySide2
+  - idna
+  - jupyter
+  - pip
+  - pip:
+    - drawSvg
+    - pyls
+    - punycodes
+    - azure-storage-blob
+
+
