@@ -1,0 +1,202 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -178,6 +178,7 @@
+ option(WITH_IK_ITASC      "Enable ITASC IK solver (only disable for development & for incompatible C++ compilers)" ON)
+ option(WITH_IK_SOLVER     "Enable Legacy IK solver (only disable for development)" ON)
+ option(WITH_FFTW3         "Enable FFTW3 support (Used for smoke, ocean sim, and audio effects)" ON)
++option(WITH_PUGIXML       "Enable PugiXML support (Used for OpenImageIO, Grease Pencil SVG export)" ON)
+ option(WITH_BULLET        "Enable Bullet (Physics Engine)" ON)
+ option(WITH_SYSTEM_BULLET "Use the systems bullet library (currently unsupported due to missing features in upstream!)" )
+ mark_as_advanced(WITH_SYSTEM_BULLET)
+@@ -692,6 +693,8 @@
+ set_and_warn_dependency(WITH_BOOST WITH_QUADRIFLOW     OFF)
+ set_and_warn_dependency(WITH_BOOST WITH_USD            OFF)
+ set_and_warn_dependency(WITH_BOOST WITH_ALEMBIC        OFF)
++set_and_warn_dependency(WITH_PUGIXML WITH_CYCLES_OSL   OFF)
++set_and_warn_dependency(WITH_PUGIXML WITH_OPENIMAGEIO  OFF)
+ 
+ if(WITH_BOOST AND NOT (WITH_CYCLES OR WITH_OPENIMAGEIO OR WITH_INTERNATIONAL OR
+    WITH_OPENVDB OR WITH_OPENCOLORIO OR WITH_USD OR WITH_ALEMBIC))
+diff --git a/build_files/build_environment/CMakeLists.txt b/build_files/build_environment/CMakeLists.txt
+--- a/build_files/build_environment/CMakeLists.txt
++++ b/build_files/build_environment/CMakeLists.txt
+@@ -93,11 +93,7 @@
+ include(cmake/potrace.cmake)
+ # Boost needs to be included after python.cmake due to the PYTHON_BINARY variable being needed.
+ include(cmake/boost.cmake)
+-if(UNIX)
+-  # Rely on PugiXML compiled with OpenImageIO
+-else()
+-  include(cmake/pugixml.cmake)
+-endif()
++include(cmake/pugixml.cmake)
+ if((NOT APPLE) OR ("${CMAKE_OSX_ARCHITECTURES}" STREQUAL "x86_64"))
+   include(cmake/ispc.cmake)
+   include(cmake/openimagedenoise.cmake)
+diff --git a/build_files/build_environment/cmake/harvest.cmake b/build_files/build_environment/cmake/harvest.cmake
+--- a/build_files/build_environment/cmake/harvest.cmake
++++ b/build_files/build_environment/cmake/harvest.cmake
+@@ -158,6 +158,8 @@
+ harvest(osl/shaders osl/shaders "*.h")
+ harvest(png/include png/include "*.h")
+ harvest(png/lib png/lib "*.a")
++harvest(pugixml/include pugixml/include "*.hpp")
++harvest(pugixml/lib pugixml/lib "*.a")
+ harvest(python/bin python/bin "python${PYTHON_SHORT_VERSION}m")
+ harvest(python/include python/include "*h")
+ harvest(python/lib python/lib "*")
+diff --git a/build_files/build_environment/cmake/openimageio.cmake b/build_files/build_environment/cmake/openimageio.cmake
+--- a/build_files/build_environment/cmake/openimageio.cmake
++++ b/build_files/build_environment/cmake/openimageio.cmake
+@@ -112,6 +112,9 @@
+   -DOPENEXR_IEX_LIBRARY=${LIBDIR}/openexr/lib/${LIBPREFIX}Iex${OPENEXR_VERSION_POSTFIX}${LIBEXT}
+   -DOPENEXR_ILMIMF_LIBRARY=${LIBDIR}/openexr/lib/${LIBPREFIX}IlmImf${OPENEXR_VERSION_POSTFIX}${LIBEXT}
+   -DSTOP_ON_WARNING=OFF
++  -DUSE_EXTERNAL_PUGIXML=ON
++  -DPUGIXML_LIBRARY=${LIBDIR}/pugixml/lib/${LIBPREFIX}pugixml${LIBEXT}
++  -DPUGIXML_INCLUDE_DIR=${LIBDIR}/pugixml/include/
+   ${WEBP_FLAGS}
+   ${OIIO_SIMD_FLAGS}
+ )
+@@ -134,6 +137,7 @@
+   external_jpeg
+   external_boost
+   external_tiff
++  external_pugixml
+   external_openjpeg${OPENJPEG_POSTFIX}
+   ${WEBP_DEP}
+ )
+diff --git a/build_files/build_environment/cmake/osl.cmake b/build_files/build_environment/cmake/osl.cmake
+--- a/build_files/build_environment/cmake/osl.cmake
++++ b/build_files/build_environment/cmake/osl.cmake
+@@ -78,14 +78,10 @@
+   -DINSTALL_DOCS=OFF
+   ${OSL_SIMD_FLAGS}
+   -DPARTIO_LIBRARIES=
++  -DPUGIXML_HOME=${LIBDIR}/pugixml
+ )
+ 
+-if(WIN32)
+-  set(OSL_EXTRA_ARGS
+-    ${OSL_EXTRA_ARGS}
+-    -DPUGIXML_HOME=${LIBDIR}/pugixml
+-  )
+-elseif(APPLE)
++if(APPLE)
+   # Make symbol hiding consistent with OIIO which defaults to OFF,
+   # avoids linker warnings on macOS
+   set(OSL_EXTRA_ARGS
+@@ -114,17 +110,9 @@
+   external_zlib
+   external_flexbison
+   external_openimageio
++  external_pugixml
+ )
+ 
+-if(UNIX)
+-  # Rely on PugiXML compiled with OpenImageIO
+-else()
+-  add_dependencies(
+-    external_osl
+-    external_pugixml
+-  )
+-endif()
+-
+ if(WIN32)
+   if(BUILD_MODE STREQUAL Release)
+     ExternalProject_Add_Step(external_osl after_install
+diff --git a/build_files/build_environment/cmake/pugixml.cmake b/build_files/build_environment/cmake/pugixml.cmake
+--- a/build_files/build_environment/cmake/pugixml.cmake
++++ b/build_files/build_environment/cmake/pugixml.cmake
+@@ -30,13 +30,13 @@
+ if(WIN32)
+   if(BUILD_MODE STREQUAL Release)
+     ExternalProject_Add_Step(external_pugixml after_install
+-      COMMAND ${CMAKE_COMMAND} -E copy ${LIBDIR}/pugixml/lib/pugixml.lib ${HARVEST_TARGET}/osl/lib/pugixml.lib
++      COMMAND ${CMAKE_COMMAND} -E copy_directory ${LIBDIR}/pugixml ${HARVEST_TARGET}/pugixml
+       DEPENDEES install
+     )
+   endif()
+   if(BUILD_MODE STREQUAL Debug)
+     ExternalProject_Add_Step(external_pugixml after_install
+-      COMMAND ${CMAKE_COMMAND} -E copy ${LIBDIR}/pugixml/lib/pugixml.lib ${HARVEST_TARGET}/osl/lib/pugixml_d.lib
++      COMMAND ${CMAKE_COMMAND} -E copy ${LIBDIR}/pugixml/lib/pugixml.lib ${HARVEST_TARGET}/pugixml/lib/pugixml_d.lib
+       DEPENDEES install
+     )
+   endif()
+diff --git a/build_files/cmake/platform/platform_unix.cmake b/build_files/cmake/platform/platform_unix.cmake
+--- a/build_files/cmake/platform/platform_unix.cmake
++++ b/build_files/cmake/platform/platform_unix.cmake
+@@ -350,15 +350,12 @@
+   endif()
+ endif()
+ 
++if(WITH_PUGIXML)
++  find_package_wrapper(PugiXML)
++endif()
++
+ if(WITH_OPENIMAGEIO)
+   find_package_wrapper(OpenImageIO)
+-  if(NOT OPENIMAGEIO_PUGIXML_FOUND AND WITH_CYCLES_STANDALONE)
+-    find_package_wrapper(PugiXML)
+-  else()
+-    set(PUGIXML_INCLUDE_DIR "${OPENIMAGEIO_INCLUDE_DIR/OpenImageIO}")
+-    set(PUGIXML_LIBRARIES "")
+-  endif()
+-
+   set(OPENIMAGEIO_LIBRARIES
+     ${OPENIMAGEIO_LIBRARIES}
+     ${PNG_LIBRARIES}
+diff --git a/build_files/cmake/platform/platform_win32.cmake b/build_files/cmake/platform/platform_win32.cmake
+--- a/build_files/cmake/platform/platform_win32.cmake
++++ b/build_files/cmake/platform/platform_win32.cmake
+@@ -253,6 +253,11 @@
+   endif()
+ endforeach()
+ 
++if(WITH_PUGIXML)
++  set(PUGIXML_LIBRARIES optimized ${LIBDIR}/pugixml/lib/pugixml.lib debug ${LIBDIR}/pugixml/lib/pugixml_d.lib)
++  set(PUGIXML_INCLUDE_DIRS ${LIBDIR}/pugixml/include)
++endif()
++
+ set(ZLIB_INCLUDE_DIRS ${LIBDIR}/zlib/include)
+ set(ZLIB_LIBRARIES ${LIBDIR}/zlib/lib/libz_st.lib)
+ set(ZLIB_INCLUDE_DIR ${LIBDIR}/zlib/include)
+@@ -651,11 +656,10 @@
+     optimized ${OSL_LIB_COMP}
+     optimized ${OSL_LIB_EXEC}
+     optimized ${OSL_LIB_QUERY}
+-    optimized ${CYCLES_OSL}/lib/pugixml.lib
+     debug ${OSL_LIB_EXEC_DEBUG}
+     debug ${OSL_LIB_COMP_DEBUG}
+     debug ${OSL_LIB_QUERY_DEBUG}
+-    debug ${CYCLES_OSL}/lib/pugixml_d.lib
++    ${PUGIXML_LIBRARIES}
+   )
+   find_path(OSL_INCLUDE_DIR OSL/oslclosure.h PATHS ${CYCLES_OSL}/include)
+   find_program(OSL_COMPILER NAMES oslc PATHS ${CYCLES_OSL}/bin)
+diff --git a/intern/cycles/CMakeLists.txt b/intern/cycles/CMakeLists.txt
+--- a/intern/cycles/CMakeLists.txt
++++ b/intern/cycles/CMakeLists.txt
+@@ -323,7 +323,7 @@
+   ${OPENIMAGEIO_INCLUDE_DIRS}/OpenImageIO
+   ${OPENEXR_INCLUDE_DIR}
+   ${OPENEXR_INCLUDE_DIRS}
+-  ${PUGIXML_INCLUDE_DIR}
++  ${PUGIXML_INCLUDE_DIRS}
+   ${TBB_INCLUDE_DIRS}
+ )
+ 
+diff --git a/intern/cycles/kernel/osl/CMakeLists.txt b/intern/cycles/kernel/osl/CMakeLists.txt
+--- a/intern/cycles/kernel/osl/CMakeLists.txt
++++ b/intern/cycles/kernel/osl/CMakeLists.txt
+@@ -43,6 +43,7 @@
+ 
+   ${OSL_LIBRARIES}
+   ${OPENIMAGEIO_LIBRARIES}
++  ${PUGIXML_LIBRARIES}
+   ${LLVM_LIBRARY}
+ )
+ 
+
