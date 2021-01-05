@@ -6,7 +6,11 @@ mkdir -p ${BUILD_DIR}
 mkdir -p ${ROOT_DIR}/lib
 pushd ${ROOT_DIR}
 # git clone -b blender-v2.91-release $GIT_SRC
-git clone -b mauc-291 $GIT_SRC
+# git clone -b mauc-291 $GIT_SRC
+pushd ${BLENDER}
+make update # for addons
+popd
+
 pushd lib
 svn checkout https://svn.blender.org/svnroot/bf-blender/trunk/lib/linux_centos7_x86_64
 popd # lib
